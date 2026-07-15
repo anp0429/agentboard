@@ -69,7 +69,7 @@ class StubAgent:
                         kind="fix",
                         node_ref="ghost-node",
                         text="Add an auth check on the (nonexistent) gateway.",
-                        targets="security-i1",
+                        targets=issue_id,
                     )
                 ]
             if persona == "reliability":
@@ -80,11 +80,14 @@ class StubAgent:
                         kind="fix",
                         node_ref=n0,
                         text="Wrap the call in a retry with exponential backoff.",
-                        targets="reliability-i1",
+                        targets=issue_id,
                     )
                 ]
             if persona == "simplicity":
                 # Same node as reliability's fix, opposite advice -> a conflict.
+                # NOTE: targets reliability's issue ON PURPOSE (not its own
+                # issue_id) — two personas' fixes on one issue is what makes
+                # the synthesizer surface a conflict instead of averaging.
                 return [
                     Proposal(
                         id="simplicity-f1",

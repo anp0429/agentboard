@@ -164,7 +164,6 @@ class FlowWhiteboardAdapter:
             for c in snap.conflicts:
                 conflict_expl[frozenset(p.id for p in c.proposals)] = c.explanation
 
-        label_of = {n.id: n.label for n in nodes}
         issues_by_node: dict[str, list[Proposal]] = {}
         for iss in issues:
             issues_by_node.setdefault(iss.node_ref, []).append(iss)
