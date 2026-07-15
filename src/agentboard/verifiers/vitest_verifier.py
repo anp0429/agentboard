@@ -76,6 +76,10 @@ class RepoProfile:
     test_base: list[str]
     build_cmd: list[str] | None = None          # None => no build step
     env: dict[str, str] = field(default_factory=lambda: {"CI": "true"})
+    # Repo-specific rules the reviewer must follow when WRITING tests (harness
+    # setup sequences, required helpers, gotchas). Injected into the reviewer
+    # prompt as data — the prompt itself stays repo-agnostic.
+    harness_notes: str = ""
 
     # ---- presets for the common cases --------------------------------------
 
@@ -134,6 +138,20 @@ SUPABASE_MCP = RepoProfile.pnpm_vitest(
     filter="@supabase/mcp-server-supabase",
     project="unit",
     build=True,
+)
+# Harness rules the reviewer must follow when writing tests for THIS repo.
+# These were previously hardcoded in the reviewer prompt; they are repo
+# knowledge, so they live here and get injected as data.
+SUPABASE_MCP.harness_notes = (
+    "MANDATORY SETUP: the tool operates on a project that must be created "
+    "first. Every test MUST reproduce, in order, the exact setup sequence used "
+    "by the existing tests before calling the tool: create the organization, "
+    "create the project, set the project status to active, then load schema "
+    "via the project's db exec. Never call the tool with a project_id you did "
+    "not create this way — doing so fails with \"Project not found\". Copy this "
+    "setup verbatim from the existing tests and change only the schema you "
+    "load and the assertions you make. Use the same helpers the existing tests "
+    "use (setup/createOrganization/createProject/callTool)."
 )
 
 

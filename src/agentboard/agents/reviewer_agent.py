@@ -43,7 +43,7 @@ Do this:
 
 3. Also reason along these review dimensions across the cases you enumerate:
    - correctness: does the output match what the intent implies for realistic inputs and covers all edge cases for given intent ?
-   - data integrity: does the code preserve and represent the underlying structures faithfully — without dropping, duplicating, or inventing information? checks against the db specific tests based on the code changed in the intent. test for completness and correctness both
+   - data integrity: does the code preserve and represent the underlying structures faithfully — without dropping, duplicating, or inventing information? Check both completeness (nothing missing) and correctness (nothing fabricated).
    - consistency: does the same input produce the same output if run twice?
    - failure modes: are malformed, empty, or missing inputs handled the way the intent implies?
 
@@ -53,8 +53,8 @@ Do this:
 
 Rules:
 - Pick realistic inputs that are allowed by the intent. Do not invent behavior the intent does not ask for.
-- MANDATORY SETUP: the tool operates on a project that must be created first. Every test MUST reproduce, in order, the exact setup sequence used by the existing tests before calling the tool: create the organization, create the project, set the project status to active, then load schema via the project's db exec. Never call the tool with a project_id you did not create this way — doing so fails with "Project not found". Copy this setup verbatim from the existing tests and change only the schema you load and the assertions you make.
-- Reuse the existing test harness exactly: same imports, same helpers (setup/createOrganization/createProject/callTool), same style. The test must compile and run.
+- Reuse the existing test harness exactly: same imports, same setup helpers, same style. Study how the existing tests prepare their environment and reproduce that setup faithfully before exercising the code under review. The test must compile and run.
+{harness_notes}
 - Assert the CORRECT expected result, not a failure.
 - EXACTNESS FOR PRODUCED COLLECTIONS (mandatory). Whenever the tool returns a collection (an array or set of items) and the intent implies that collection is the complete, authoritative answer, assert it EXACTLY: assert the count AND deep-equal the full expected set — nothing missing and nothing extra. A consumer relies on this output as truth; an item that should not be there is false information the consumer will act on, a correctness failure, not a cosmetic one. Presence-only matchers (arrayContaining, toContain, toContainEqual, objectContaining, stringContaining) are FORBIDDEN when the collection is meant to be complete, because they pass even when the tool returns extra or duplicated items. Assert length (e.g. toHaveLength(N)) plus a full deep-equal; if output order is not guaranteed, sort both sides by a stable key first, but still assert the exact length — the length check is what catches over-production.
 
@@ -143,6 +143,7 @@ class ReviewerAgent:
         model: str = "gpt-5.5",
         client=None,
         max_chars: int = 12000,
+        harness_notes: str = "",
     ):
         self.repo_root = repo_root
         self.target_path = target_path
@@ -150,6 +151,9 @@ class ReviewerAgent:
         self.model = model
         self._client = client
         self.max_chars = max_chars
+        # Repo-specific test-writing rules (e.g. RepoProfile.harness_notes).
+        # Injected into the prompt as data; the prompt stays repo-agnostic.
+        self.harness_notes = harness_notes.strip()
         self._is_openai = model.startswith("gpt") or model.startswith("o")
 
     def _read(self, rel: str) -> str:
@@ -185,6 +189,10 @@ class ReviewerAgent:
             f"SOURCE FILE ({self.target_path}):\n```\n{source}\n```\n\n"
             f"EXISTING TESTS ({self.existing_tests_path}):\n```\n{tests}\n```"
         )
+        notes = (
+            "- " + self.harness_notes if self.harness_notes else
+            "(no repo-specific harness notes provided)"
+        )
         try:
             client = self._client_lazy()
             if self._is_openai:
@@ -192,7 +200,7 @@ class ReviewerAgent:
                     model=self.model,
                     response_format={"type": "json_object"},
                     messages=[
-                        {"role": "system", "content": _SYSTEM.format(intent=intent)},
+                        {"role": "system", "content": _SYSTEM.format(intent=intent, harness_notes=notes)},
                         {"role": "user", "content": user},
                     ],
                 )
@@ -201,7 +209,7 @@ class ReviewerAgent:
                 resp = client.messages.create(
                     model=self.model,
                     max_tokens=8000,
-                    system=_SYSTEM.format(intent=intent)
+                    system=_SYSTEM.format(intent=intent, harness_notes=notes)
                     + "\n\nRespond with ONLY the JSON object, no prose before or after.",
                     messages=[{"role": "user", "content": user}],
                 )
