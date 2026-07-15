@@ -9,6 +9,7 @@ Deterministic, dependency-free (git via subprocess). "before" is the true branch
 point (`git merge-base head base`), not current main, which may have drifted.
 No LLM here — this is ground truth about what changed.
 """
+
 from __future__ import annotations
 
 import subprocess
@@ -18,15 +19,15 @@ from dataclasses import dataclass, field
 @dataclass
 class ChangedFile:
     path: str
-    added: str = ""                 # added lines (the new behavior to review)
-    removed: str = ""               # removed lines (what it replaced)
+    added: str = ""  # added lines (the new behavior to review)
+    removed: str = ""  # removed lines (what it replaced)
     hunks: list[str] = field(default_factory=list)
 
 
 @dataclass
 class PRDiff:
-    base: str                       # resolved merge-base sha
-    head: str                       # PR head ref/sha
+    base: str  # resolved merge-base sha
+    head: str  # PR head ref/sha
     files: list[ChangedFile] = field(default_factory=list)
 
     def file(self, path: str) -> ChangedFile | None:
@@ -34,8 +35,9 @@ class PRDiff:
 
 
 def _git(repo: str, *args: str) -> str:
-    r = subprocess.run(["git", "-C", repo, *args],
-                       capture_output=True, text=True, timeout=120)
+    r = subprocess.run(
+        ["git", "-C", repo, *args], capture_output=True, text=True, timeout=120
+    )
     if r.returncode != 0:
         raise RuntimeError(f"git {' '.join(args)} failed: {r.stderr.strip()[:200]}")
     return r.stdout
@@ -65,9 +67,11 @@ def _split_patch(patch: str) -> tuple[str, str, list[str]]:
                 hunks.append("\n".join(cur))
             cur = [line]
         elif line.startswith("+") and not line.startswith("+++"):
-            added.append(line[1:]); cur.append(line)
+            added.append(line[1:])
+            cur.append(line)
         elif line.startswith("-") and not line.startswith("---"):
-            removed.append(line[1:]); cur.append(line)
+            removed.append(line[1:])
+            cur.append(line)
         elif cur:
             cur.append(line)
     if cur:
@@ -93,7 +97,7 @@ def diff_blob(diff: PRDiff, max_chars: int | None = None) -> str:
     header = f"PR head {diff.head} vs base {diff.base[:12]}"
     blocks = [f"\n--- {f.path} ---\n{f.added}" for f in diff.files]
 
-    if max_chars is None:                       # default: feed everything
+    if max_chars is None:  # default: feed everything
         return header + "".join(blocks)
 
     # bounded mode: equal share per file, fairness not git order
@@ -105,4 +109,3 @@ def diff_blob(diff: PRDiff, max_chars: int | None = None) -> str:
     for b in blocks:
         out.append(b if len(b) <= per_file else b[:per_file] + "\n… [truncated]")
     return "".join(out)
-

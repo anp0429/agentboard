@@ -20,6 +20,7 @@ Why this is collaboration and not a vote:
 
 Structure mirrors reviewer_agent: model call split from pure parsing.
 """
+
 from __future__ import annotations
 
 import json
@@ -61,16 +62,21 @@ def _loads_gaps_lenient(text: str) -> dict:
     objs, stack, instr, esc = [], [], False, False
     for i, ch in enumerate(text):
         if instr:
-            if esc: esc = False
-            elif ch == "\\": esc = True
-            elif ch == '"': instr = False
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                instr = False
             continue
-        if ch == '"': instr = True
-        elif ch == "{": stack.append(i)
+        if ch == '"':
+            instr = True
+        elif ch == "{":
+            stack.append(i)
         elif ch == "}" and stack:
             start = stack.pop()
             try:
-                o = json.loads(text[start:i + 1])
+                o = json.loads(text[start : i + 1])
                 if isinstance(o, dict) and "behavior" in o and "test_code" in o:
                     objs.append(o)
             except json.JSONDecodeError:
@@ -88,14 +94,16 @@ def parse_gaps(data: dict) -> list[ReviewFinding]:
         axis = g.get("axis", "correctness")
         if axis not in ("correctness", "consistency"):
             axis = "correctness"
-        findings.append(ReviewFinding(
-            behavior=behavior,
-            axis=axis,
-            covered_by_existing=False,
-            coverage_note="proposed by critic (2nd-pass, different model)",
-            test_path=g.get("test_path"),
-            test_code=tc,
-        ))
+        findings.append(
+            ReviewFinding(
+                behavior=behavior,
+                axis=axis,
+                covered_by_existing=False,
+                coverage_note="proposed by critic (2nd-pass, different model)",
+                test_path=g.get("test_path"),
+                test_code=tc,
+            )
+        )
     return findings
 
 
@@ -107,7 +115,9 @@ def _coverage_digest(prior: list[ReviewFinding]) -> str:
 
 
 class CriticAgent:
-    def __init__(self, model: str = "claude-opus-4-8", client=None, max_tokens: int = 3000):
+    def __init__(
+        self, model: str = "claude-opus-4-8", client=None, max_tokens: int = 3000
+    ):
         self.model = model
         self._client = client
         self.max_tokens = max_tokens
@@ -117,14 +127,17 @@ class CriticAgent:
         if self._client is None:
             if self._is_openai:
                 from openai import OpenAI
+
                 self._client = OpenAI()
             else:
                 from anthropic import Anthropic
+
                 self._client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
         return self._client
 
-    def critique(self, intent: str, source: str, existing_tests: str,
-                 prior: list[ReviewFinding]) -> list[ReviewFinding]:
+    def critique(
+        self, intent: str, source: str, existing_tests: str, prior: list[ReviewFinding]
+    ) -> list[ReviewFinding]:
         user = (
             f"SOURCE FILE:\n```\n{source[:9000]}\n```\n\n"
             f"EXISTING TESTS (harness to reuse):\n```\n{existing_tests[:9000]}\n```\n\n"
@@ -147,10 +160,13 @@ class CriticAgent:
                 resp = client.messages.create(
                     model=self.model,
                     max_tokens=8000,
-                    system=_SYSTEM.format(intent=intent) + "\n\nRespond with ONLY the JSON object, no prose before or after.",
+                    system=_SYSTEM.format(intent=intent)
+                    + "\n\nRespond with ONLY the JSON object, no prose before or after.",
                     messages=[{"role": "user", "content": user}],
                 )
-                text = "".join(b.text for b in resp.content if getattr(b, "type", None) == "text")
+                text = "".join(
+                    b.text for b in resp.content if getattr(b, "type", None) == "text"
+                )
                 data = _loads_gaps_lenient(text)
         except Exception as ex:  # never crash the loop
             print(f"  [warn] critic: {ex}")

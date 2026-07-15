@@ -28,7 +28,7 @@ import subprocess
 import tempfile
 from dataclasses import dataclass
 
-from ..state import CodeChange, Node, Proposal, Rejection
+from ..state import CodeChange, Rejection
 from .vitest_verifier import RepoProfile, _parse_vitest_json, _tail
 
 

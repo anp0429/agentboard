@@ -19,7 +19,7 @@ import json
 import os
 import re
 
-from ..state import CodeChange, Node, Proposal
+from ..state import CodeChange, Proposal
 
 _SYSTEM = (
     "You are a senior engineer. You are given one source file and a goal. Propose "

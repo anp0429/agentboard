@@ -17,6 +17,7 @@ Design constraints, each earned the hard way this session:
 The agent only PROPOSES (behaviors + tests). The FindingVerifier runs them and
 decides. No model certifies a gap.
 """
+
 from __future__ import annotations
 
 import json
@@ -84,16 +85,21 @@ def _loads_lenient(text: str) -> dict:
     objs, stack, instr, esc = [], [], False, False
     for i, ch in enumerate(text):
         if instr:
-            if esc: esc = False
-            elif ch == "\\": esc = True
-            elif ch == '"': instr = False
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                instr = False
             continue
-        if ch == '"': instr = True
-        elif ch == "{": stack.append(i)
+        if ch == '"':
+            instr = True
+        elif ch == "{":
+            stack.append(i)
         elif ch == "}" and stack:
             start = stack.pop()
             try:
-                o = json.loads(text[start:i + 1])
+                o = json.loads(text[start : i + 1])
                 if isinstance(o, dict) and "behavior" in o:
                     objs.append(o)
             except json.JSONDecodeError:
@@ -113,20 +119,31 @@ def parse_review_plan(data: dict) -> list[ReviewFinding]:
             axis = "correctness"
         covered = bool(b.get("covered_by_existing", False))
         tp, tc = b.get("test_path"), b.get("test_code")
-        findings.append(ReviewFinding(
-            behavior=behavior,
-            axis=axis,
-            covered_by_existing=covered,
-            coverage_note=str(b.get("coverage_note", "")).strip()[:200],
-            test_path=tp if (isinstance(tp, str) and tp and not covered) else None,
-            test_code=tc if (isinstance(tc, str) and tc.strip() and not covered) else None,
-        ))
+        findings.append(
+            ReviewFinding(
+                behavior=behavior,
+                axis=axis,
+                covered_by_existing=covered,
+                coverage_note=str(b.get("coverage_note", "")).strip()[:200],
+                test_path=tp if (isinstance(tp, str) and tp and not covered) else None,
+                test_code=tc
+                if (isinstance(tc, str) and tc.strip() and not covered)
+                else None,
+            )
+        )
     return findings
 
 
 class ReviewerAgent:
-    def __init__(self, repo_root: str, target_path: str, existing_tests_path: str,
-                 model: str = "gpt-5.5", client=None, max_chars: int = 12000):
+    def __init__(
+        self,
+        repo_root: str,
+        target_path: str,
+        existing_tests_path: str,
+        model: str = "gpt-5.5",
+        client=None,
+        max_chars: int = 12000,
+    ):
         self.repo_root = repo_root
         self.target_path = target_path
         self.existing_tests_path = existing_tests_path
@@ -146,9 +163,11 @@ class ReviewerAgent:
         if self._client is None:
             if self._is_openai:
                 from openai import OpenAI
+
                 self._client = OpenAI()
             else:
                 from anthropic import Anthropic
+
                 self._client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
         return self._client
 
@@ -157,7 +176,9 @@ class ReviewerAgent:
         tests = self._read(self.existing_tests_path)[: self.max_chars]
         change_block = (
             f"WHAT THIS PR CHANGED (review THIS against the intent, not the whole file):\n"
-            f"```\n{change}\n```\n\n" if change.strip() else ""
+            f"```\n{change}\n```\n\n"
+            if change.strip()
+            else ""
         )
         user = (
             f"{change_block}"
@@ -180,10 +201,13 @@ class ReviewerAgent:
                 resp = client.messages.create(
                     model=self.model,
                     max_tokens=8000,
-                    system=_SYSTEM.format(intent=intent) + "\n\nRespond with ONLY the JSON object, no prose before or after.",
+                    system=_SYSTEM.format(intent=intent)
+                    + "\n\nRespond with ONLY the JSON object, no prose before or after.",
                     messages=[{"role": "user", "content": user}],
                 )
-                text = "".join(b.text for b in resp.content if getattr(b, "type", None) == "text")
+                text = "".join(
+                    b.text for b in resp.content if getattr(b, "type", None) == "text"
+                )
                 data = _loads_lenient(text)
         except Exception as e:  # never crash the loop
             print(f"  [warn] reviewer: {e}")

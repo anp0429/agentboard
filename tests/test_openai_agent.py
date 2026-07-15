@@ -61,5 +61,6 @@ def test_propose_full_path_with_fake_client(tmp_path):
 
 
 if __name__ == "__main__":
-    import sys, pytest
+    import sys
+    import pytest
     sys.exit(pytest.main([__file__, "-q"]))

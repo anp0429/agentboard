@@ -104,7 +104,7 @@ def render_review_html(run: ReviewRun, path: str) -> str:
         axis = f'<span class="meta">axis: {f.axis}</span>'
         cov = (f"already covered — {html.escape(f.coverage_note)}"
                if f.covered_by_existing else
-               f"not covered by existing tests" + (f" — {html.escape(f.coverage_note)}" if f.coverage_note else ""))
+               "not covered by existing tests" + (f" — {html.escape(f.coverage_note)}" if f.coverage_note else ""))
         extra = ""
         if f.observed:
             extra += f'<div class="observed"><b>Observed:</b> {html.escape(f.observed)}</div>'

@@ -17,6 +17,7 @@ assertion that compiled and ran. It does NOT prove the assertion itself is the
 *right* thing to assert — judging that is the second agent / human layer. This
 gate confirms "the test is real and the tool fails it," nothing more.
 """
+
 from __future__ import annotations
 
 import json
@@ -57,13 +58,23 @@ def _test_title(test_code: str) -> str | None:
 class FindingVerifier:
     _RESULT = "agentboard-finding-result.json"
 
-    def __init__(self, repo_root: str, profile: RepoProfile, tests_file: str,
-                 timeout: int = 1800, reuse_warm: bool = False):
+    def __init__(
+        self,
+        repo_root: str,
+        profile: RepoProfile,
+        tests_file: str,
+        timeout: int = 1800,
+        reuse_warm: bool = False,
+    ):
         self.repo_root = repo_root
         self.profile = profile
-        self.tests_file = tests_file   # where agent tests get injected (helpers in scope)
+        self.tests_file = (
+            tests_file  # where agent tests get injected (helpers in scope)
+        )
         self.timeout = timeout
-        self.reuse_warm = reuse_warm   # keep the warm base across run() calls (for N runs)
+        self.reuse_warm = (
+            reuse_warm  # keep the warm base across run() calls (for N runs)
+        )
         # warm-base state (built once, reused per finding)
         self._warm_repo: str | None = None
         self._warm_root: str | None = None
@@ -72,7 +83,9 @@ class FindingVerifier:
 
     def _run(self, args, cwd):
         env = {**os.environ, **self.profile.env}
-        return subprocess.run(args, cwd=cwd, env=env, capture_output=True, text=True, timeout=self.timeout)
+        return subprocess.run(
+            args, cwd=cwd, env=env, capture_output=True, text=True, timeout=self.timeout
+        )
 
     # -- warm base: copy + install + build ONCE ------------------------------
     def _ensure_warm(self) -> None:
@@ -85,8 +98,13 @@ class FindingVerifier:
             return
         self._warm_root = tempfile.mkdtemp(prefix="agentboard_warm_")
         repo = os.path.join(self._warm_root, "repo")
-        shutil.copytree(self.repo_root, repo,
-                        ignore=shutil.ignore_patterns(".git", "node_modules", "dist", "__pycache__"))
+        shutil.copytree(
+            self.repo_root,
+            repo,
+            ignore=shutil.ignore_patterns(
+                ".git", "node_modules", "dist", "__pycache__"
+            ),
+        )
         # capture the pristine tests file ONCE, before any injection
         tpath = os.path.join(repo, self.tests_file)
         if not os.path.isfile(tpath):
@@ -120,14 +138,20 @@ class FindingVerifier:
             finding.status = "skipped_covered"
             return finding
         self._ensure_warm()
-        if self._prep_error:                       # install/build failed -> nothing can run
-            finding.status = "broken_test"; finding.observed = self._prep_error; return finding
+        if self._prep_error:  # install/build failed -> nothing can run
+            finding.status = "broken_test"
+            finding.observed = self._prep_error
+            return finding
         title = _test_title(finding.test_code)
         if not title:
-            finding.status = "broken_test"; finding.observed = "could not read test name"; return finding
+            finding.status = "broken_test"
+            finding.observed = "could not read test name"
+            return finding
         injected, err = _inject(self._pristine_tests or "", finding.test_code)
         if injected is None:
-            finding.status = "broken_test"; finding.observed = err; return finding
+            finding.status = "broken_test"
+            finding.observed = err
+            return finding
         repo = self._warm_repo
         tpath = os.path.join(repo, self.tests_file)
         try:
@@ -137,7 +161,11 @@ class FindingVerifier:
             out = os.path.join(repo, self._RESULT)
             # run ONLY the injected test by name, so pre-existing suite failures
             # can never be misattributed to this finding.
-            self._run(self.profile.test_base + ["-t", title, "--reporter=json", f"--outputFile={out}"], repo)
+            self._run(
+                self.profile.test_base
+                + ["-t", title, "--reporter=json", f"--outputFile={out}"],
+                repo,
+            )
             finding.status, finding.observed = self._read(out)
             return finding
         finally:

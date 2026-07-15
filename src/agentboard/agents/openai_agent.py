@@ -18,7 +18,7 @@ import json
 import os
 import re
 
-from ..state import CodeChange, Node, Proposal
+from ..state import CodeChange, Proposal
 
 _PERSONA_FOCUS = {
     "backend": "correctness and precision of behavior; you ship features.",

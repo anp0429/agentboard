@@ -55,7 +55,7 @@ class OpenAIExplainer:
                           {"role": "user", "content": user}],
             )
             return (r.choices[0].message.content or "").strip()[:240]
-        except Exception as e:
+        except Exception:
             return ""  # narrative is optional; never break the run
 
     def explain_rejection(self, proposal: Proposal, reason: str) -> str:
