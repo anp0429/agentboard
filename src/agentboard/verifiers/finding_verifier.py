@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -47,7 +48,6 @@ def _inject(pristine: str, test_code: str) -> tuple[str | None, str]:
     return pristine[:idx] + "\n\n" + test_code.rstrip() + "\n" + pristine[idx:], ""
 
 
-import re
 
 
 def _test_title(test_code: str) -> str | None:
