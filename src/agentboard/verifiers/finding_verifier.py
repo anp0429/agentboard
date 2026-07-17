@@ -56,7 +56,9 @@ def _inject(pristine: str, test_code: str) -> tuple[str | None, str]:
     """
     if not test_code:
         return None, "no test supplied"
-    code = test_code.rstrip()
+    code = _strip_imports(test_code).rstrip()
+    if not code:
+        return None, "test contained only imports"
     if "\ndescribe(" in pristine or pristine.startswith("describe("):
         idx = pristine.rstrip().rfind("\n});")
         if idx == -1:
@@ -65,6 +67,36 @@ def _inject(pristine: str, test_code: str) -> tuple[str | None, str]:
     return pristine.rstrip() + "\n\n" + code + "\n", ""
 
 
+
+
+def _strip_imports(test_code: str) -> str:
+    """Remove module-level import statements from proposed test code.
+
+    Proposals are injected INTO an existing tests file, never run standalone —
+    and ES imports are only legal at module top level, so a proposal that
+    carries its own imports fails the whole file's transform (three findings
+    died this way against zod). The harness rule already tells the proposer
+    to reuse the host file's imports; stripping enforces it mechanically.
+    If a stripped import was genuinely needed, the test fails at runtime with
+    a clear ReferenceError — still a correct broken_test, instead of a
+    transform failure that poisons the batch.
+    """
+    out, skipping = [], False
+    for line in test_code.splitlines():
+        stripped = line.strip()
+        if skipping:
+            if stripped.endswith(";") or stripped.endswith('"') or stripped.endswith("'"):
+                skipping = False
+            continue
+        if stripped.startswith("import ") or stripped.startswith("import{"):
+            # multi-line import: skip until the closing `from "..."` line
+            if not (stripped.endswith(";") or " from " in stripped and
+                    (stripped.endswith('";') or stripped.endswith("';")
+                     or stripped.endswith('"') or stripped.endswith("'"))):
+                skipping = " from " not in stripped
+            continue
+        out.append(line)
+    return "\n".join(out)
 
 
 _COPY_IGNORES = {".git", "node_modules", "dist", "__pycache__"}

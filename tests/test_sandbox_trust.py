@@ -178,3 +178,33 @@ def test_inject_into_toplevel_file_appends_at_eof_never_nests():
     assert err == ""
     # the new test must come AFTER test b's close — top level, not nested
     assert out.rstrip().endswith('test("new", () => {});')
+
+
+def test_inject_strips_proposal_imports():
+    """Proposals ride inside a host file; their own imports are illegal there
+    and killed three zod findings via whole-file transform failure."""
+    from agentboard.verifiers.finding_verifier import _inject
+    pristine = 'import x\n\ntest("a", () => {});\n'
+    proposal = (
+        'import { expect, test } from "vitest";\n'
+        'import * as z from "zod/v4";\n'
+        'test("new", () => {\n  expect(1).toBe(1);\n});'
+    )
+    out, err = _inject(pristine, proposal)
+    assert err == ""
+    assert 'from "vitest"' not in out.replace('import x', '')
+    assert 'zod/v4' not in out
+    assert 'test("new"' in out
+
+
+def test_inject_strips_multiline_imports():
+    from agentboard.verifiers.finding_verifier import _inject
+    pristine = 'test("a", () => {});\n'
+    proposal = (
+        'import {\n  expect,\n  test,\n} from "vitest";\n'
+        'test("new", () => {});'
+    )
+    out, err = _inject(pristine, proposal)
+    assert err == ""
+    assert "vitest" not in out
+    assert 'test("new"' in out
