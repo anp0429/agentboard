@@ -13,7 +13,9 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 Axis = Literal["correctness", "consistency"]
-Status = Literal["skipped_covered", "handled", "confirmed_gap", "broken_test", "pending"]
+Status = Literal[
+    "skipped_covered", "handled", "confirmed_gap", "broken_test", "timed_out", "pending"
+]
 
 
 @dataclass
@@ -52,6 +54,7 @@ _STATUS_LABEL = {
     "handled": ("handled", "#1f7a4d", "#5dcaa5"),
     "skipped_covered": ("already covered", "#76756e", "#c9c8c2"),
     "broken_test": ("test didn't run", "#8a6d1b", "#e0c060"),
+    "timed_out": ("timed out — human call", "#5a5a8f", "#a9a9d6"),
     "pending": ("not yet run", "#76756e", "#c9c8c2"),
 }
 
@@ -96,6 +99,7 @@ def render_review_html(run: ReviewRun, path: str) -> str:
     gaps = sum(1 for f in run.findings if f.status == "confirmed_gap")
     covered = sum(1 for f in run.findings if f.status in ("skipped_covered", "handled"))
     broken = sum(1 for f in run.findings if f.status == "broken_test")
+    timed = sum(1 for f in run.findings if f.status == "timed_out")
 
     cards = []
     for f in run.findings:
@@ -156,6 +160,7 @@ def render_review_html(run: ReviewRun, path: str) -> str:
         f'<div class="sub">Target: {html.escape(run.target)}\n\nIntent: {html.escape(run.intent[:400])}</div></header>'
         f'<div class="summary"><b>{gaps}</b> confirmed gap(s) · '
         f'<b>{covered}</b> covered/handled · <b>{broken}</b> test didn\'t run · '
+        f'<b>{timed}</b> timed out · '
         f'<b>{len(run.findings)}</b> behaviors reviewed</div>'
         f'<div class="wrap">{"".join(cards)}</div>'
     )

@@ -20,6 +20,7 @@ from agentboard.agents.critic_agent import CriticAgent
 from agentboard.agents.gap_auditor import GapAuditor
 from agentboard.verifiers.finding_verifier import FindingVerifier
 from agentboard.verifiers.vitest_verifier import RepoProfile
+from agentboard.fingerprint import verdict_summary
 from agentboard.review import ReviewRun, render_review_html
 
 # --- edit these --------------------------------------------------------------
@@ -109,7 +110,8 @@ def main():
             print(f"                  AUDITOR: {f.audit} — {f.audit_reason[:80]}")
 
     out = render_review_html(review, "./review_board.html")
-    print(f"\n{len(review.gaps)} confirmed gap(s). Board: {out}")
+    print(f"\n{verdict_summary(review)}")
+    print(f"{len(review.gaps)} confirmed gap(s). Board: {out}")
 
 
 if __name__ == "__main__":

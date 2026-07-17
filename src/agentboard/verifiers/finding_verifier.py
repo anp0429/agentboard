@@ -7,6 +7,12 @@ is the whole trust anchor, because a red test is ambiguous on its own:
     - PASS                 -> the tool already does the right thing  -> "handled"
     - ASSERTION failure    -> the tool did the WRONG thing           -> "confirmed_gap"
     - compile/load/crash   -> the TEST is broken, not the tool       -> "broken_test"
+    - did not finish       -> nobody knows yet                       -> "timed_out"
+
+The fourth bucket is deliberately NOT auto-resolved: a timeout is ambiguous
+evidence (slow test? hung tool? starved sandbox?) and resolving ambiguity is
+the human's job. The gate reports the limit it hit and stops. No retries,
+no guessing — the board is where a person decides.
 
 That third bucket is what keeps a red result meaningful: a model that writes a
 garbage test must NOT be able to manufacture a "gap." Only a test that actually
@@ -161,11 +167,18 @@ class FindingVerifier:
             out = os.path.join(repo, self._RESULT)
             # run ONLY the injected test by name, so pre-existing suite failures
             # can never be misattributed to this finding.
-            self._run(
-                self.profile.test_base
-                + ["-t", title, "--reporter=json", f"--outputFile={out}"],
-                repo,
-            )
+            try:
+                self._run(
+                    self.profile.test_base
+                    + ["-t", title, "--reporter=json", f"--outputFile={out}"],
+                    repo,
+                )
+            except subprocess.TimeoutExpired:
+                finding.status = "timed_out"
+                finding.observed = (
+                    f"did not finish within {self.timeout}s (subprocess limit)"
+                )
+                return finding
             finding.status, finding.observed = self._read(out)
             return finding
         finally:
@@ -185,6 +198,7 @@ class FindingVerifier:
         # find the newly-added test's result; distinguish assertion-fail from load error
         failed_assertion = None
         load_error = None
+        timeout_msg = None
         ran = 0
         for suite in data.get("testResults", []):
             msg = suite.get("message") or ""
@@ -195,14 +209,22 @@ class FindingVerifier:
                     ran += 1
                 if t.get("status") == "failed":
                     fm = (t.get("failureMessages") or [""])[0]
+                    first = fm.strip().splitlines()[0][:200] if fm.strip() else ""
+                    # vitest's per-test timeout ("Test timed out in 30000ms") is
+                    # AMBIGUOUS evidence — not a broken test, not a gap. Surface
+                    # it as its own status and let the human decide.
+                    if "timed out" in fm.lower():
+                        timeout_msg = first
                     # a vitest assertion failure reads "AssertionError: ..."; a thrown
                     # runtime error reads differently. Treat AssertionError as a real gap.
-                    if "AssertionError" in fm or "expected" in fm.lower():
-                        failed_assertion = fm.strip().splitlines()[0][:200]
+                    elif "AssertionError" in fm or "expected" in fm.lower():
+                        failed_assertion = first
                     else:
-                        load_error = fm.strip().splitlines()[0][:200]
+                        load_error = first
         if failed_assertion:
             return "confirmed_gap", failed_assertion
+        if timeout_msg:
+            return "timed_out", timeout_msg
         if load_error:
             return "broken_test", load_error
         if ran == 0:

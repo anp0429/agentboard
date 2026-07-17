@@ -1,0 +1,675 @@
+<!doctype html><meta charset=utf-8><title>agentboard review</title><style>
+:root { color-scheme: light dark; }
+* { box-sizing: border-box; }
+body { margin:0; font:15px/1.5 -apple-system,Segoe UI,Roboto,sans-serif;
+       background:#f6f6f4; color:#26251f; }
+@media (prefers-color-scheme: dark){ body{ background:#1c1c1a; color:#e8e6df; } }
+header { padding:20px 24px; border-bottom:1px solid #d9d8d2; }
+h1 { font-size:18px; font-weight:600; margin:0; }
+.sub { color:#76756e; font-size:13px; margin-top:6px; white-space:pre-wrap; max-width:900px; }
+.summary { padding:14px 24px; font-size:14px; border-bottom:1px solid #d9d8d2; }
+.summary b { font-weight:600; }
+.wrap { padding:20px 24px; max-width:920px; }
+.card { border-radius:12px; padding:14px 16px; margin-bottom:12px; border:1px solid #d9d8d2;
+        border-left-width:4px; background:#fff; }
+@media (prefers-color-scheme: dark){ .card{ background:#26261f; border-color:#3a3a36; } }
+.behavior { font-weight:600; font-size:15px; }
+.meta { font-size:12px; color:#76756e; margin-top:3px; }
+.badge { display:inline-block; font-size:11px; font-weight:600; padding:2px 9px;
+         border-radius:20px; color:#fff; margin-left:8px; vertical-align:middle; }
+.observed { font-size:13px; margin-top:8px; }
+details { margin-top:8px; }
+summary { font-size:12px; color:#5a76a8; cursor:pointer; }
+pre { background:#f0efe9; border-radius:8px; padding:8px 10px; margin:6px 0 0;
+      font:12px/1.45 ui-monospace,SFMono-Regular,monospace; white-space:pre-wrap;
+      word-break:break-word; }
+@media (prefers-color-scheme: dark){ pre{ background:#1f1f1b; } }
+.verify { margin-top:10px; font-size:12px; font-weight:600; color:#a32d2d; }
+@media (prefers-color-scheme: dark){ .verify{ color:#f09595; } }
+pre.gap-test { border:1px solid #e0b4b4; max-height:340px; overflow:auto; }
+@media (prefers-color-scheme: dark){ pre.gap-test{ border-color:#5a2d2d; } }
+.audit { margin-top:10px; padding:8px 10px; border-radius:8px; border:1px solid #ccc;
+         border-left-width:4px; font-size:12px; background:#faf8f2; }
+@media (prefers-color-scheme: dark){ .audit{ background:#232019; } }
+.audit .ev { color:#76756e; margin-top:4px; font-family:ui-monospace,monospace; }
+</style><header><h1>agentboard — review</h1><div class="sub">Target: packages/mcp-server-supabase/src/tools/database-operation-tools.ts
+
+Intent: Issue (the problem): list_tables verbose output represented composite
+foreign keys incorrectly. Originally a pg-meta SQL cross-join paired every source
+column with every target column (N^2 rows, fabricating relationships). An interim
+fix paired columns positionally but still emitted one row per column pair, so
+nothing signaled that two rows belong to one atomic constraint vs two independent FKs.
+
+</div></header><div class="summary"><b>0</b> confirmed gap(s) · <b>12</b> covered/handled · <b>0</b> test didn't run · <b>12</b> behaviors reviewed</div><div class="wrap"><div class="card" style="border-left-color:#c9c8c2"><div class="behavior">Domain: this change operates on PostgreSQL relational schema metadata introspection for the MCP list_tables tool, especially JSON representation of table constraints and foreign-key relationships.<span class="badge" style="background:#76756e">already covered</span></div><div class="meta">already covered — domain identified from list_tables verbose tests and pg-meta/table metadata code</div><span class="meta">axis: correctness</span></div><div class="card" style="border-left-color:#c9c8c2"><div class="behavior">A single-column foreign key is represented as one constraint object whose source_columns and target_columns are one-element arrays.<span class="badge" style="background:#76756e">already covered</span></div><div class="meta">already covered — existing list_tables verbose foreign key assertion expects source_columns: [&#x27;user_id&#x27;] and target_columns: [&#x27;id&#x27;]</div><span class="meta">axis: correctness</span></div><div class="card" style="border-left-color:#c9c8c2"><div class="behavior">A composite foreign key is grouped into one atomic constraint object instead of one row per column pair.<span class="badge" style="background:#76756e">already covered</span></div><div class="meta">already covered — existing test &#x27;composite FK is grouped as one constraint with positionally ordered columns&#x27; asserts one child_parent_fk constraint with two source and target columns</div><span class="meta">axis: correctness</span></div><div class="card" style="border-left-color:#5dcaa5"><div class="behavior">Composite foreign-key column arrays preserve the constraint-definition order even when that order differs from physical column/attnum order.<span class="badge" style="background:#1f7a4d">handled</span></div><div class="meta">not covered by existing tests — the existing composite FK test uses table column order that matches the FK definition order, so it does not prove ordering is by constraint ordinality rather than attnum</div><span class="meta">axis: correctness</span><div class="observed"><b>Observed:</b> test passed — the tool already does this</div><details><summary>test the agent wrote</summary><pre>test(&#x27;composite FK column arrays use constraint definition order rather than table column order&#x27;, async () =&gt; {
+  const { callTool } = await setup();
+
+  const org = await createOrganization({
+    name: &#x27;My Org&#x27;,
+    plan: &#x27;free&#x27;,
+    allowed_release_channels: [&#x27;ga&#x27;],
+  });
+
+  const project = await createProject({
+    name: &#x27;Project 1&#x27;,
+    region: &#x27;us-east-1&#x27;,
+    organization_id: org.id,
+  });
+  project.status = &#x27;ACTIVE_HEALTHY&#x27;;
+
+  await project.db.exec(`
+    create table parent (
+      x int,
+      y int,
+      primary key (y, x)
+    );
+    create table child (
+      a int,
+      b int,
+      constraint child_parent_fk
+        foreign key (b, a) references parent (y, x)
+    );
+  `);
+
+  const result = await callTool({
+    name: &#x27;list_tables&#x27;,
+    arguments: {
+      project_id: project.id,
+      schemas: [&#x27;public&#x27;],
+      verbose: true,
+    },
+  });
+
+  const tableNames = result.tables
+    .map((t: { name: string }) =&gt; t.name)
+    .sort();
+  expect(tableNames).toHaveLength(2);
+  expect(tableNames).toEqual([&#x27;public.child&#x27;, &#x27;public.parent&#x27;]);
+
+  const childTable = result.tables.find(
+    (t: { name: string }) =&gt; t.name === &#x27;public.child&#x27;
+  );
+  const constraints = [...(childTable.foreign_key_constraints ?? [])].sort(
+    (a, b) =&gt; a.name.localeCompare(b.name)
+  );
+
+  expect(constraints).toHaveLength(1);
+  expect(constraints).toEqual([
+    {
+      name: &#x27;child_parent_fk&#x27;,
+      source_table: &#x27;public.child&#x27;,
+      source_columns: [&#x27;b&#x27;, &#x27;a&#x27;],
+      target_table: &#x27;public.parent&#x27;,
+      target_columns: [&#x27;y&#x27;, &#x27;x&#x27;],
+    },
+  ]);
+});</pre></details></div><div class="card" style="border-left-color:#5dcaa5"><div class="behavior">Two independent single-column foreign keys between the same source and target tables remain two separate constraint objects rather than being merged or mistaken for one composite key.<span class="badge" style="background:#1f7a4d">handled</span></div><div class="meta">not covered by existing tests — none found</div><span class="meta">axis: correctness</span><div class="observed"><b>Observed:</b> test passed — the tool already does this</div><details><summary>test the agent wrote</summary><pre>test(&#x27;independent FKs between the same tables remain separate constraint objects&#x27;, async () =&gt; {
+  const { callTool } = await setup();
+
+  const org = await createOrganization({
+    name: &#x27;My Org&#x27;,
+    plan: &#x27;free&#x27;,
+    allowed_release_channels: [&#x27;ga&#x27;],
+  });
+
+  const project = await createProject({
+    name: &#x27;Project 1&#x27;,
+    region: &#x27;us-east-1&#x27;,
+    organization_id: org.id,
+  });
+  project.status = &#x27;ACTIVE_HEALTHY&#x27;;
+
+  await project.db.exec(`
+    create table users (
+      id int primary key
+    );
+    create table orders (
+      id int primary key,
+      buyer_id int,
+      seller_id int,
+      constraint orders_buyer_fk foreign key (buyer_id) references users (id),
+      constraint orders_seller_fk foreign key (seller_id) references users (id)
+    );
+  `);
+
+  const result = await callTool({
+    name: &#x27;list_tables&#x27;,
+    arguments: {
+      project_id: project.id,
+      schemas: [&#x27;public&#x27;],
+      verbose: true,
+    },
+  });
+
+  const tableNames = result.tables
+    .map((t: { name: string }) =&gt; t.name)
+    .sort();
+  expect(tableNames).toHaveLength(2);
+  expect(tableNames).toEqual([&#x27;public.orders&#x27;, &#x27;public.users&#x27;]);
+
+  const ordersTable = result.tables.find(
+    (t: { name: string }) =&gt; t.name === &#x27;public.orders&#x27;
+  );
+  const constraints = [...(ordersTable.foreign_key_constraints ?? [])].sort(
+    (a, b) =&gt; a.name.localeCompare(b.name)
+  );
+
+  expect(constraints).toHaveLength(2);
+  expect(constraints).toEqual([
+    {
+      name: &#x27;orders_buyer_fk&#x27;,
+      source_table: &#x27;public.orders&#x27;,
+      source_columns: [&#x27;buyer_id&#x27;],
+      target_table: &#x27;public.users&#x27;,
+      target_columns: [&#x27;id&#x27;],
+    },
+    {
+      name: &#x27;orders_seller_fk&#x27;,
+      source_table: &#x27;public.orders&#x27;,
+      source_columns: [&#x27;seller_id&#x27;],
+      target_table: &#x27;public.users&#x27;,
+      target_columns: [&#x27;id&#x27;],
+    },
+  ]);
+});</pre></details></div><div class="card" style="border-left-color:#5dcaa5"><div class="behavior">When a listed table is the target of a foreign key, the relationship still reports the original source_table and source_columns rather than implying the listed target table is the source.<span class="badge" style="background:#1f7a4d">handled</span></div><div class="meta">not covered by existing tests — none found; the existing composite FK test checks the source/child table only</div><span class="meta">axis: correctness</span><div class="observed"><b>Observed:</b> test passed — the tool already does this</div><details><summary>test the agent wrote</summary><pre>test(&#x27;target table FK relationship keeps the original source table&#x27;, async () =&gt; {
+  const { callTool } = await setup();
+
+  const org = await createOrganization({
+    name: &#x27;My Org&#x27;,
+    plan: &#x27;free&#x27;,
+    allowed_release_channels: [&#x27;ga&#x27;],
+  });
+
+  const project = await createProject({
+    name: &#x27;Project 1&#x27;,
+    region: &#x27;us-east-1&#x27;,
+    organization_id: org.id,
+  });
+  project.status = &#x27;ACTIVE_HEALTHY&#x27;;
+
+  await project.db.exec(`
+    create table parent (
+      y int,
+      x int,
+      primary key (y, x)
+    );
+    create table child (
+      b int,
+      a int,
+      constraint child_parent_fk
+        foreign key (b, a) references parent (y, x)
+    );
+  `);
+
+  const result = await callTool({
+    name: &#x27;list_tables&#x27;,
+    arguments: {
+      project_id: project.id,
+      schemas: [&#x27;public&#x27;],
+      verbose: true,
+    },
+  });
+
+  const tableNames = result.tables
+    .map((t: { name: string }) =&gt; t.name)
+    .sort();
+  expect(tableNames).toHaveLength(2);
+  expect(tableNames).toEqual([&#x27;public.child&#x27;, &#x27;public.parent&#x27;]);
+
+  const parentTable = result.tables.find(
+    (t: { name: string }) =&gt; t.name === &#x27;public.parent&#x27;
+  );
+  const constraints = [...(parentTable.foreign_key_constraints ?? [])].sort(
+    (a, b) =&gt; a.name.localeCompare(b.name)
+  );
+
+  expect(constraints).toHaveLength(1);
+  expect(constraints).toEqual([
+    {
+      name: &#x27;child_parent_fk&#x27;,
+      source_table: &#x27;public.child&#x27;,
+      source_columns: [&#x27;b&#x27;, &#x27;a&#x27;],
+      target_table: &#x27;public.parent&#x27;,
+      target_columns: [&#x27;y&#x27;, &#x27;x&#x27;],
+    },
+  ]);
+});</pre></details></div><div class="card" style="border-left-color:#5dcaa5"><div class="behavior">Cross-schema foreign keys preserve schema-qualified source_table and target_table names while still grouping composite columns positionally.<span class="badge" style="background:#1f7a4d">handled</span></div><div class="meta">not covered by existing tests — none found</div><span class="meta">axis: correctness</span><div class="observed"><b>Observed:</b> test passed — the tool already does this</div><details><summary>test the agent wrote</summary><pre>test(&#x27;cross-schema composite FK reports schema-qualified source and target tables&#x27;, async () =&gt; {
+  const { callTool } = await setup();
+
+  const org = await createOrganization({
+    name: &#x27;My Org&#x27;,
+    plan: &#x27;free&#x27;,
+    allowed_release_channels: [&#x27;ga&#x27;],
+  });
+
+  const project = await createProject({
+    name: &#x27;Project 1&#x27;,
+    region: &#x27;us-east-1&#x27;,
+    organization_id: org.id,
+  });
+  project.status = &#x27;ACTIVE_HEALTHY&#x27;;
+
+  await project.db.exec(`
+    create schema private;
+    create table private.parent (
+      y int,
+      x int,
+      primary key (y, x)
+    );
+    create table public.child (
+      b int,
+      a int,
+      constraint child_private_parent_fk
+        foreign key (b, a) references private.parent (y, x)
+    );
+  `);
+
+  const result = await callTool({
+    name: &#x27;list_tables&#x27;,
+    arguments: {
+      project_id: project.id,
+      schemas: [&#x27;public&#x27;, &#x27;private&#x27;],
+      verbose: true,
+    },
+  });
+
+  const tableNames = result.tables
+    .map((t: { name: string }) =&gt; t.name)
+    .sort();
+  expect(tableNames).toHaveLength(2);
+  expect(tableNames).toEqual([&#x27;private.parent&#x27;, &#x27;public.child&#x27;]);
+
+  const childTable = result.tables.find(
+    (t: { name: string }) =&gt; t.name === &#x27;public.child&#x27;
+  );
+  const constraints = [...(childTable.foreign_key_constraints ?? [])].sort(
+    (a, b) =&gt; a.name.localeCompare(b.name)
+  );
+
+  expect(constraints).toHaveLength(1);
+  expect(constraints).toEqual([
+    {
+      name: &#x27;child_private_parent_fk&#x27;,
+      source_table: &#x27;public.child&#x27;,
+      source_columns: [&#x27;b&#x27;, &#x27;a&#x27;],
+      target_table: &#x27;private.parent&#x27;,
+      target_columns: [&#x27;y&#x27;, &#x27;x&#x27;],
+    },
+  ]);
+});</pre></details></div><div class="card" style="border-left-color:#5dcaa5"><div class="behavior">A table with no foreign keys does not fabricate foreign_key_constraints in verbose output.<span class="badge" style="background:#1f7a4d">handled</span></div><div class="meta">not covered by existing tests — none found for the changed FK representation specifically</div><span class="meta">axis: correctness</span><div class="observed"><b>Observed:</b> test passed — the tool already does this</div><details><summary>test the agent wrote</summary><pre>test(&#x27;verbose list_tables does not fabricate FK constraints for tables without FKs&#x27;, async () =&gt; {
+  const { callTool } = await setup();
+
+  const org = await createOrganization({
+    name: &#x27;My Org&#x27;,
+    plan: &#x27;free&#x27;,
+    allowed_release_channels: [&#x27;ga&#x27;],
+  });
+
+  const project = await createProject({
+    name: &#x27;Project 1&#x27;,
+    region: &#x27;us-east-1&#x27;,
+    organization_id: org.id,
+  });
+  project.status = &#x27;ACTIVE_HEALTHY&#x27;;
+
+  await project.db.exec(`
+    create table solo (
+      id int primary key
+    );
+  `);
+
+  const result = await callTool({
+    name: &#x27;list_tables&#x27;,
+    arguments: {
+      project_id: project.id,
+      schemas: [&#x27;public&#x27;],
+      verbose: true,
+    },
+  });
+
+  const tableNames = result.tables
+    .map((t: { name: string }) =&gt; t.name)
+    .sort();
+  expect(tableNames).toHaveLength(1);
+  expect(tableNames).toEqual([&#x27;public.solo&#x27;]);
+
+  const soloTable = result.tables.find(
+    (t: { name: string }) =&gt; t.name === &#x27;public.solo&#x27;
+  );
+  expect(soloTable.foreign_key_constraints).toBeUndefined();
+});</pre></details></div><div class="card" style="border-left-color:#5dcaa5"><div class="behavior">Repeated verbose list_tables calls for the same composite FK return the same complete constraint object and column order.<span class="badge" style="background:#1f7a4d">handled</span></div><div class="meta">not covered by existing tests — none found; existing tests call the tool once per schema setup</div><span class="meta">axis: consistency</span><div class="observed"><b>Observed:</b> test passed — the tool already does this</div><details><summary>test the agent wrote</summary><pre>test(&#x27;composite FK verbose output is stable across repeated list_tables calls&#x27;, async () =&gt; {
+  const { callTool } = await setup();
+
+  const org = await createOrganization({
+    name: &#x27;My Org&#x27;,
+    plan: &#x27;free&#x27;,
+    allowed_release_channels: [&#x27;ga&#x27;],
+  });
+
+  const project = await createProject({
+    name: &#x27;Project 1&#x27;,
+    region: &#x27;us-east-1&#x27;,
+    organization_id: org.id,
+  });
+  project.status = &#x27;ACTIVE_HEALTHY&#x27;;
+
+  await project.db.exec(`
+    create table parent (
+      x int,
+      y int,
+      primary key (y, x)
+    );
+    create table child (
+      a int,
+      b int,
+      constraint child_parent_fk
+        foreign key (b, a) references parent (y, x)
+    );
+  `);
+
+  async function getChildConstraints() {
+    const result = await callTool({
+      name: &#x27;list_tables&#x27;,
+      arguments: {
+        project_id: project.id,
+        schemas: [&#x27;public&#x27;],
+        verbose: true,
+      },
+    });
+
+    const tableNames = result.tables
+      .map((t: { name: string }) =&gt; t.name)
+      .sort();
+    expect(tableNames).toHaveLength(2);
+    expect(tableNames).toEqual([&#x27;public.child&#x27;, &#x27;public.parent&#x27;]);
+
+    const childTable = result.tables.find(
+      (t: { name: string }) =&gt; t.name === &#x27;public.child&#x27;
+    );
+    return [...(childTable.foreign_key_constraints ?? [])].sort((a, b) =&gt;
+      a.name.localeCompare(b.name)
+    );
+  }
+
+  const firstConstraints = await getChildConstraints();
+  const secondConstraints = await getChildConstraints();
+
+  expect(firstConstraints).toHaveLength(1);
+  expect(firstConstraints).toEqual([
+    {
+      name: &#x27;child_parent_fk&#x27;,
+      source_table: &#x27;public.child&#x27;,
+      source_columns: [&#x27;b&#x27;, &#x27;a&#x27;],
+      target_table: &#x27;public.parent&#x27;,
+      target_columns: [&#x27;y&#x27;, &#x27;x&#x27;],
+    },
+  ]);
+  expect(secondConstraints).toHaveLength(1);
+  expect(secondConstraints).toEqual(firstConstraints);
+});</pre></details></div><div class="card" style="border-left-color:#5dcaa5"><div class="behavior">A self-referential composite foreign key should be reported exactly once for the table, not duplicated because the same table is both source and target.<span class="badge" style="background:#1f7a4d">handled</span></div><div class="meta">not covered by existing tests — proposed by critic (2nd-pass, different model)</div><span class="meta">axis: correctness</span><div class="observed"><b>Observed:</b> test passed — the tool already does this</div><details><summary>test the agent wrote</summary><pre>test(&#x27;list tables reports a self-referential composite foreign key exactly once&#x27;, async () =&gt; {
+  const { callTool } = await setup();
+
+  const org = await createOrganization({
+    name: &#x27;My Org&#x27;,
+    plan: &#x27;free&#x27;,
+    allowed_release_channels: [&#x27;ga&#x27;],
+  });
+
+  const project = await createProject({
+    name: &#x27;Project 1&#x27;,
+    region: &#x27;us-east-1&#x27;,
+    organization_id: org.id,
+  });
+  project.status = &#x27;ACTIVE_HEALTHY&#x27;;
+
+  await project.db.exec(stripIndent`
+    create table public.nodes (
+      tenant_id integer not null,
+      node_id integer not null,
+      parent_tenant_id integer,
+      parent_node_id integer,
+      primary key (tenant_id, node_id),
+      constraint nodes_parent_fk
+        foreign key (parent_tenant_id, parent_node_id)
+        references public.nodes (tenant_id, node_id)
+    );
+  `);
+
+  const result = await callTool({
+    name: &#x27;list_tables&#x27;,
+    arguments: {
+      project_id: project.id,
+      schemas: [&#x27;public&#x27;],
+      verbose: true,
+    },
+  });
+
+  const actualTables = result.tables
+    .map((table: any) =&gt; ({
+      name: table.name,
+      foreign_key_constraints: [...(table.foreign_key_constraints ?? [])].sort(
+        (a: any, b: any) =&gt;
+          `${a.name}|${a.source_table}|${a.target_table}`.localeCompare(
+            `${b.name}|${b.source_table}|${b.target_table}`
+          )
+      ),
+    }))
+    .sort((a: any, b: any) =&gt; a.name.localeCompare(b.name));
+
+  const expectedTables = [
+    {
+      name: &#x27;public.nodes&#x27;,
+      foreign_key_constraints: [
+        {
+          name: &#x27;nodes_parent_fk&#x27;,
+          source_table: &#x27;public.nodes&#x27;,
+          source_columns: [&#x27;parent_tenant_id&#x27;, &#x27;parent_node_id&#x27;],
+          target_table: &#x27;public.nodes&#x27;,
+          target_columns: [&#x27;tenant_id&#x27;, &#x27;node_id&#x27;],
+        },
+      ],
+    },
+  ];
+
+  expect(actualTables).toHaveLength(expectedTables.length);
+  actualTables.forEach((table: any, index: number) =&gt; {
+    expect(table.foreign_key_constraints).toHaveLength(
+      expectedTables[index].foreign_key_constraints.length
+    );
+  });
+  expect(actualTables).toEqual(expectedTables);
+});</pre></details></div><div class="card" style="border-left-color:#5dcaa5"><div class="behavior">When only the target schema is requested, an incoming composite foreign key from a source table in an unlisted schema should still be included on the listed target table with the true source_table.<span class="badge" style="background:#1f7a4d">handled</span></div><div class="meta">not covered by existing tests — proposed by critic (2nd-pass, different model)</div><span class="meta">axis: correctness</span><div class="observed"><b>Observed:</b> test passed — the tool already does this</div><details><summary>test the agent wrote</summary><pre>test(&#x27;list tables includes incoming cross-schema composite foreign keys from unlisted source schemas&#x27;, async () =&gt; {
+  const { callTool } = await setup();
+
+  const org = await createOrganization({
+    name: &#x27;My Org&#x27;,
+    plan: &#x27;free&#x27;,
+    allowed_release_channels: [&#x27;ga&#x27;],
+  });
+
+  const project = await createProject({
+    name: &#x27;Project 1&#x27;,
+    region: &#x27;us-east-1&#x27;,
+    organization_id: org.id,
+  });
+  project.status = &#x27;ACTIVE_HEALTHY&#x27;;
+
+  await project.db.exec(stripIndent`
+    create schema private;
+
+    create table public.accounts (
+      tenant_id integer not null,
+      account_id integer not null,
+      primary key (tenant_id, account_id)
+    );
+
+    create table private.audit_events (
+      tenant_id integer not null,
+      account_id integer not null,
+      event_id integer not null,
+      primary key (tenant_id, event_id),
+      constraint audit_events_account_fk
+        foreign key (tenant_id, account_id)
+        references public.accounts (tenant_id, account_id)
+    );
+  `);
+
+  const result = await callTool({
+    name: &#x27;list_tables&#x27;,
+    arguments: {
+      project_id: project.id,
+      schemas: [&#x27;public&#x27;],
+      verbose: true,
+    },
+  });
+
+  const actualTables = result.tables
+    .map((table: any) =&gt; ({
+      name: table.name,
+      foreign_key_constraints: [...(table.foreign_key_constraints ?? [])].sort(
+        (a: any, b: any) =&gt;
+          `${a.name}|${a.source_table}|${a.target_table}`.localeCompare(
+            `${b.name}|${b.source_table}|${b.target_table}`
+          )
+      ),
+    }))
+    .sort((a: any, b: any) =&gt; a.name.localeCompare(b.name));
+
+  const expectedTables = [
+    {
+      name: &#x27;public.accounts&#x27;,
+      foreign_key_constraints: [
+        {
+          name: &#x27;audit_events_account_fk&#x27;,
+          source_table: &#x27;private.audit_events&#x27;,
+          source_columns: [&#x27;tenant_id&#x27;, &#x27;account_id&#x27;],
+          target_table: &#x27;public.accounts&#x27;,
+          target_columns: [&#x27;tenant_id&#x27;, &#x27;account_id&#x27;],
+        },
+      ],
+    },
+  ];
+
+  expect(actualTables).toHaveLength(expectedTables.length);
+  actualTables.forEach((table: any, index: number) =&gt; {
+    expect(table.foreign_key_constraints).toHaveLength(
+      expectedTables[index].foreign_key_constraints.length
+    );
+  });
+  expect(actualTables).toEqual(expectedTables);
+});</pre></details></div><div class="card" style="border-left-color:#5dcaa5"><div class="behavior">Multiple incoming composite foreign keys with the same constraint name but different source tables should remain distinct constraint objects on the target table.<span class="badge" style="background:#1f7a4d">handled</span></div><div class="meta">not covered by existing tests — proposed by critic (2nd-pass, different model)</div><span class="meta">axis: correctness</span><div class="observed"><b>Observed:</b> test passed — the tool already does this</div><details><summary>test the agent wrote</summary><pre>test(&#x27;list tables does not merge incoming composite foreign keys that share a constraint name&#x27;, async () =&gt; {
+  const { callTool } = await setup();
+
+  const org = await createOrganization({
+    name: &#x27;My Org&#x27;,
+    plan: &#x27;free&#x27;,
+    allowed_release_channels: [&#x27;ga&#x27;],
+  });
+
+  const project = await createProject({
+    name: &#x27;Project 1&#x27;,
+    region: &#x27;us-east-1&#x27;,
+    organization_id: org.id,
+  });
+  project.status = &#x27;ACTIVE_HEALTHY&#x27;;
+
+  await project.db.exec(stripIndent`
+    create table public.parent_accounts (
+      tenant_id integer not null,
+      account_id integer not null,
+      primary key (tenant_id, account_id)
+    );
+
+    create table public.documents (
+      document_id integer generated by default as identity primary key,
+      parent_tenant_id integer not null,
+      parent_account_id integer not null,
+      constraint fk_parent_account
+        foreign key (parent_tenant_id, parent_account_id)
+        references public.parent_accounts (tenant_id, account_id)
+    );
+
+    create table public.folders (
+      folder_id integer generated by default as identity primary key,
+      parent_tenant_id integer not null,
+      parent_account_id integer not null,
+      constraint fk_parent_account
+        foreign key (parent_tenant_id, parent_account_id)
+        references public.parent_accounts (tenant_id, account_id)
+    );
+  `);
+
+  const result = await callTool({
+    name: &#x27;list_tables&#x27;,
+    arguments: {
+      project_id: project.id,
+      schemas: [&#x27;public&#x27;],
+      verbose: true,
+    },
+  });
+
+  const actualTables = result.tables
+    .map((table: any) =&gt; ({
+      name: table.name,
+      foreign_key_constraints: [...(table.foreign_key_constraints ?? [])].sort(
+        (a: any, b: any) =&gt;
+          `${a.name}|${a.source_table}|${a.target_table}`.localeCompare(
+            `${b.name}|${b.source_table}|${b.target_table}`
+          )
+      ),
+    }))
+    .sort((a: any, b: any) =&gt; a.name.localeCompare(b.name));
+
+  const expectedTables = [
+    {
+      name: &#x27;public.documents&#x27;,
+      foreign_key_constraints: [
+        {
+          name: &#x27;fk_parent_account&#x27;,
+          source_table: &#x27;public.documents&#x27;,
+          source_columns: [&#x27;parent_tenant_id&#x27;, &#x27;parent_account_id&#x27;],
+          target_table: &#x27;public.parent_accounts&#x27;,
+          target_columns: [&#x27;tenant_id&#x27;, &#x27;account_id&#x27;],
+        },
+      ],
+    },
+    {
+      name: &#x27;public.folders&#x27;,
+      foreign_key_constraints: [
+        {
+          name: &#x27;fk_parent_account&#x27;,
+          source_table: &#x27;public.folders&#x27;,
+          source_columns: [&#x27;parent_tenant_id&#x27;, &#x27;parent_account_id&#x27;],
+          target_table: &#x27;public.parent_accounts&#x27;,
+          target_columns: [&#x27;tenant_id&#x27;, &#x27;account_id&#x27;],
+        },
+      ],
+    },
+    {
+      name: &#x27;public.parent_accounts&#x27;,
+      foreign_key_constraints: [
+        {
+          name: &#x27;fk_parent_account&#x27;,
+          source_table: &#x27;public.documents&#x27;,
+          source_columns: [&#x27;parent_tenant_id&#x27;, &#x27;parent_account_id&#x27;],
+          target_table: &#x27;public.parent_accounts&#x27;,
+          target_columns: [&#x27;tenant_id&#x27;, &#x27;account_id&#x27;],
+        },
+        {
+          name: &#x27;fk_parent_account&#x27;,
+          source_table: &#x27;public.folders&#x27;,
+          source_columns: [&#x27;parent_tenant_id&#x27;, &#x27;parent_account_id&#x27;],
+          target_table: &#x27;public.parent_accounts&#x27;,
+          target_columns: [&#x27;tenant_id&#x27;, &#x27;account_id&#x27;],
+        },
+      ],
+    },
+  ];
+
+  expect(actualTables).toHaveLength(expectedTables.length);
+  actualTables.forEach((table: any, index: number) =&gt; {
+    expect(table.foreign_key_constraints).toHaveLength(
+      expectedTables[index].foreign_key_constraints.length
+    );
+  });
+  expect(actualTables).toEqual(expectedTables);
+});</pre></details></div></div>
