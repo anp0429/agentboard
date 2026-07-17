@@ -1,0 +1,7 @@
+{
+  "name": "agentboard-demo-target",
+  "private": true,
+  "type": "module",
+  "scripts": { "test": "vitest run" },
+  "devDependencies": { "vitest": "2.1.9" }
+}

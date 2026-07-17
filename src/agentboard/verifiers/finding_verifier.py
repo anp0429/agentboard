@@ -251,6 +251,17 @@ class FindingVerifier:
                     f.write(self._pristine_tests)
 
     @staticmethod
+    def _classify_failure(fm: str) -> tuple[str, str]:
+        """One failed assertionResult -> (kind, first_line). The single
+        shared brain for serial and batched paths — they must never diverge."""
+        first = fm.strip().splitlines()[0][:200] if fm.strip() else ""
+        if "timed out" in fm.lower():
+            return "timeout", first
+        if "AssertionError" in fm or "expected" in fm.lower():
+            return "assertion", first
+        return "load_error", first
+
+    @staticmethod
     def _read(out: str) -> tuple[str, str]:
         if not os.path.isfile(out):
             return "broken_test", "test run produced no JSON output"
@@ -272,15 +283,10 @@ class FindingVerifier:
                     ran += 1
                 if t.get("status") == "failed":
                     fm = (t.get("failureMessages") or [""])[0]
-                    first = fm.strip().splitlines()[0][:200] if fm.strip() else ""
-                    # vitest's per-test timeout ("Test timed out in 30000ms") is
-                    # AMBIGUOUS evidence — not a broken test, not a gap. Surface
-                    # it as its own status and let the human decide.
-                    if "timed out" in fm.lower():
+                    kind, first = FindingVerifier._classify_failure(fm)
+                    if kind == "timeout":
                         timeout_msg = first
-                    # a vitest assertion failure reads "AssertionError: ..."; a thrown
-                    # runtime error reads differently. Treat AssertionError as a real gap.
-                    elif "AssertionError" in fm or "expected" in fm.lower():
+                    elif kind == "assertion":
                         failed_assertion = first
                     else:
                         load_error = first
@@ -294,12 +300,145 @@ class FindingVerifier:
             return "broken_test", "injected test did not run (name match failed)"
         return "handled", "test passed — the tool already does this"
 
-    def run(self, review: ReviewRun) -> ReviewRun:
-        """Classify all findings against one warm base. Install/build happens once
-        here, not once per finding."""
+    # -- batched gate ---------------------------------------------------------
+
+    _MARK = "___ab{i}___"
+
+    def _classify_batch(self, findings: list[ReviewFinding]) -> set[int]:
+        """Inject every finding's test at once (uniquely marked titles), run
+        vitest ONCE filtered to the mark, attribute results per finding.
+
+        Returns the indexes it could NOT confidently attribute — the caller
+        re-runs those through the proven serial path. Batch is an
+        optimization layer; serial stays the verdict authority for anything
+        ambiguous. A defective proposal that breaks collection of the whole
+        file therefore poisons nothing: everyone falls back.
+        """
+        pending = {
+            i: f for i, f in enumerate(findings)
+            if not f.covered_by_existing
+        }
+        if not pending:
+            return set()
+        self._ensure_warm()
+        if self._prep_error:
+            for f in pending.values():
+                f.status = "broken_test"
+                f.observed = self._prep_error
+            return set()
+
+        content = self._pristine_tests or ""
+        marked: dict[int, str] = {}
+        for i, f in pending.items():
+            title = _test_title(f.test_code)
+            if not title:
+                continue  # serial path will report it properly
+            mark = self._MARK.format(i=i)
+            code = f.test_code.replace(title, f"{mark} {title}", 1)
+            injected, _err = _inject(content, code)
+            if injected is None:
+                continue
+            content, marked[i] = injected, mark
+        if not marked:
+            return set(pending)
+
+        repo = self._warm_repo
+        tpath = os.path.join(repo, self.tests_file)
+        out = os.path.join(repo, self._RESULT)
+        try:
+            with open(tpath, "w", encoding="utf-8") as fh:
+                fh.write(content)
+            try:
+                self._run(
+                    self.profile.test_base
+                    + ["-t", "___ab", "--reporter=json", f"--outputFile={out}"],
+                    repo,
+                )
+            except subprocess.TimeoutExpired:
+                # the BATCH hit the subprocess limit — which test hung is
+                # unknown, so nobody gets a batched verdict. Serial decides.
+                return set(pending)
+            attributed = self._attribute(out, marked, pending)
+            return set(pending) - attributed
+        finally:
+            if self._pristine_tests is not None:
+                with open(tpath, "w", encoding="utf-8") as fh:
+                    fh.write(self._pristine_tests)
+
+    def _attribute(
+        self,
+        out: str,
+        marked: dict[int, str],
+        pending: dict[int, ReviewFinding],
+    ) -> set[int]:
+        """Map batched results back to findings. Only a finding whose marked
+        test demonstrably RAN gets a verdict here; everything else is left
+        for serial. Verdict logic is the same shared brain as serial."""
+        if not os.path.isfile(out):
+            return set()
+        try:
+            with open(out, encoding="utf-8") as fh:
+                data = json.load(fh)
+        except Exception:  # noqa: BLE001
+            return set()
+        # collect every assertion whose title carries one of our marks
+        per: dict[int, list[dict]] = {}
+        for suite in data.get("testResults", []):
+            for t in suite.get("assertionResults", []):
+                title = t.get("title") or t.get("fullName") or ""
+                for i, mark in marked.items():
+                    if mark in title:
+                        per.setdefault(i, []).append(t)
+        done: set[int] = set()
+        for i, results in per.items():
+            f = pending[i]
+            gap = timeout = load = None
+            ran = 0
+            for t in results:
+                if t.get("status") in ("passed", "failed"):
+                    ran += 1
+                if t.get("status") == "failed":
+                    fm = (t.get("failureMessages") or [""])[0]
+                    kind, first = self._classify_failure(fm)
+                    if kind == "timeout":
+                        timeout = first
+                    elif kind == "assertion":
+                        gap = first
+                    else:
+                        load = first
+            if not ran:
+                continue  # never ran -> serial decides
+            if gap:
+                f.status, f.observed = "confirmed_gap", gap
+            elif timeout:
+                f.status, f.observed = "timed_out", timeout
+            elif load:
+                f.status, f.observed = "broken_test", load
+            else:
+                f.status, f.observed = (
+                    "handled", "test passed — the tool already does this"
+                )
+            done.add(i)
+        return done
+
+    def run(self, review: ReviewRun, batch: bool = True) -> ReviewRun:
+        """Classify all findings against one warm base. With batch=True the
+        gate runs ONE test invocation and serial-fallbacks anything it could
+        not confidently attribute; batch=False is the original per-finding
+        path. Both produce identical verdicts — tests/test_gate_e2e.py
+        asserts fingerprint equality between the two modes.
+        """
         try:
             for f in review.findings:
-                self.classify(f)
+                if f.covered_by_existing:
+                    f.status = "skipped_covered"
+            if batch:
+                leftover = self._classify_batch(review.findings)
+                for i in sorted(leftover):
+                    self.classify(review.findings[i])
+            else:
+                for f in review.findings:
+                    self.classify(f)
             return review
         finally:
             if not self.reuse_warm:
