@@ -154,3 +154,21 @@ def test_autodetect_ignores_node_modules(tmp_path):
     # only the node_modules match exists -> must NOT return it; falls back
     got = _default_tests_for(repo, "src/parser.ts")
     assert "node_modules" not in got
+
+
+def test_autodetect_disambiguates_by_closest_path(tmp_path):
+    """A monorepo with the SAME test filename in several packages (zod has
+    error.test.ts in v3, v4/mini, and v4/classic). Must pick the one in the
+    same subtree as the target, not give up and not pick a distant one."""
+    from agentboard.cli import _default_tests_for
+    repo = str(tmp_path)
+    for p in (
+        "packages/zod/src/v4/mini/tests/error.test.ts",
+        "packages/zod/src/v4/classic/tests/error.test.ts",
+        "packages/zod/src/v3/tests/error.test.ts",
+        "packages/zod/src/v4/core/errors.ts",
+    ):
+        os.makedirs(os.path.join(repo, os.path.dirname(p)), exist_ok=True)
+        open(os.path.join(repo, p), "w").close()
+    got = _default_tests_for(repo, "packages/zod/src/v4/core/errors.ts")
+    assert got == "packages/zod/src/v4/classic/tests/error.test.ts", got

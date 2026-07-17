@@ -183,17 +183,28 @@ def _default_tests_for(repo: str, target: str) -> str:
             variants.append(base[:-1])       # errors -> error
         else:
             variants.append(base + "s")      # error  -> errors
+        target_dir = os.path.dirname(os.path.join(repo, target))
         for name in variants:
+            hits: list[str] = []
             for pat in (
                 f"**/tests/**/{name}.test{suffix}",
                 f"**/__tests__/**/{name}.test{suffix}",
                 f"**/test/**/{name}.test{suffix}",
                 f"**/{name}.test{suffix}",
             ):
-                hits = _glob.glob(os.path.join(repo, pat), recursive=True)
-                hits = [h for h in hits if "node_modules" not in h]
-                if len(hits) == 1:
-                    return os.path.relpath(hits[0], repo)
+                hits += _glob.glob(os.path.join(repo, pat), recursive=True)
+            hits = sorted({h for h in hits if "node_modules" not in h})
+            if len(hits) == 1:
+                return os.path.relpath(hits[0], repo)
+            if len(hits) > 1:
+                # ambiguous — pick the file sharing the longest directory
+                # prefix with the target (closest in the monorepo tree)
+                def _shared(h: str) -> int:
+                    return len(os.path.commonpath([target_dir, os.path.dirname(h)]))
+                best = max(hits, key=_shared)
+                # only accept if it's meaningfully close (shares more than repo root)
+                if _shared(best) > len(repo):
+                    return os.path.relpath(best, repo)
         return colocated  # fall back to the co-located name for a clear error
     return ""
 
