@@ -56,6 +56,47 @@ def _inject(pristine: str, test_code: str) -> tuple[str | None, str]:
 
 
 
+_COPY_IGNORES = {".git", "node_modules", "dist", "__pycache__"}
+
+
+def _copy_discrepancies(src: str, dst: str, limit: int = 5) -> list[str]:
+    """Compare two trees (pruning _COPY_IGNORES) by relative path and size.
+
+    The warm sandbox is only trustworthy if it IS the repo. A copy step that
+    silently drops a config file is non-determinism entering through the
+    operational layer — the verdict would depend on which files survived the
+    copy. This is a pure function so it can be tested without a sandbox.
+    Returns up to `limit` human-readable discrepancies; empty means faithful.
+    """
+
+    def walk(root: str) -> dict[str, int]:
+        out: dict[str, int] = {}
+        for cur, dirs, files in os.walk(root):
+            dirs[:] = [d for d in dirs if d not in _COPY_IGNORES]
+            for name in files:
+                full = os.path.join(cur, name)
+                rel = os.path.relpath(full, root)
+                try:
+                    out[rel] = os.path.getsize(full)
+                except OSError:
+                    out[rel] = -1
+        return out
+
+    a, b = walk(src), walk(dst)
+    diffs: list[str] = []
+    for rel in sorted(set(a) | set(b)):
+        if rel not in b:
+            diffs.append(f"missing from sandbox: {rel}")
+        elif rel not in a:
+            diffs.append(f"extra in sandbox: {rel}")
+        elif a[rel] != b[rel] and -1 not in (a[rel], b[rel]):
+            diffs.append(f"size mismatch: {rel} ({a[rel]} -> {b[rel]} bytes)")
+        if len(diffs) >= limit:
+            diffs.append("...")
+            break
+    return diffs
+
+
 def _test_title(test_code: str) -> str | None:
     m = re.search(r"""(?:test|it)\(\s*[`'"](.+?)[`'"]""", test_code or "")
     return m.group(1) if m else None
@@ -111,6 +152,13 @@ class FindingVerifier:
                 ".git", "node_modules", "dist", "__pycache__"
             ),
         )
+        # the sandbox must BE the repo — a dropped file here would make
+        # verdicts depend on copy luck. Fail loudly, never review a ghost.
+        diffs = _copy_discrepancies(self.repo_root, repo)
+        if diffs:
+            self._prep_error = "sandbox fidelity check failed: " + "; ".join(diffs)
+            self._warm_repo = repo
+            return
         # capture the pristine tests file ONCE, before any injection
         tpath = os.path.join(repo, self.tests_file)
         if not os.path.isfile(tpath):
@@ -127,6 +175,21 @@ class FindingVerifier:
             bld = self._run(self.profile.build_cmd, repo)
             if bld.returncode != 0:
                 self._prep_error = f"build failed: {_tail(bld.stderr or bld.stdout)}"
+        # functional smoke probe: prove the runner starts before judging
+        # anything. An exit code can lie across toolchain versions; a probe
+        # that actually launches the runner cannot.
+        if not self._prep_error and getattr(self.profile, "smoke_cmd", None):
+            try:
+                smoke = self._run(self.profile.smoke_cmd, repo)
+                if smoke.returncode != 0:
+                    self._prep_error = (
+                        "environment smoke probe failed: "
+                        f"{_tail(smoke.stderr or smoke.stdout)}"
+                    )
+            except subprocess.TimeoutExpired:
+                self._prep_error = (
+                    f"environment smoke probe did not finish within {self.timeout}s"
+                )
         self._warm_repo = repo
 
     def close(self) -> None:

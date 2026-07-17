@@ -80,6 +80,13 @@ class RepoProfile:
     # setup sequences, required helpers, gotchas). Injected into the reviewer
     # prompt as data — the prompt itself stays repo-agnostic.
     harness_notes: str = ""
+    # Cheap functional probe run once after install/build: proves the test
+    # runner actually starts in the warm sandbox (binary present, config
+    # loads, transforms work) BEFORE any finding is judged. Exit codes can be
+    # version-flaky (a pnpm notice once benched an entire run as "install
+    # failed"); a probe that RUNS the runner cannot be fooled by log noise.
+    # None => skip.
+    smoke_cmd: list[str] | None = None
 
     # ---- presets for the common cases --------------------------------------
 
@@ -107,6 +114,7 @@ class RepoProfile:
             build_cmd=["pnpm", "-r", "build"] if build else None,
             test_base=test,
             env={"CI": "true", **(env or {})},
+            smoke_cmd=test + ["--passWithNoTests", "-t", "___agentboard_env_probe___"],
         )
 
     @classmethod
@@ -129,6 +137,7 @@ class RepoProfile:
             build_cmd=["npm", "run", "build"] if build else None,
             test_base=test,
             env={"CI": "true", **(env or {})},
+            smoke_cmd=test + ["--passWithNoTests", "-t", "___agentboard_env_probe___"],
         )
 
 
