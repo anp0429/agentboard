@@ -20,8 +20,19 @@ import sys
 import tempfile
 import time
 
+from .agents.critic_agent import CriticAgent
+from .agents.reviewer_agent import ReviewerAgent
+from .config import (
+    build_profile,
+    current_branch,
+    fork_point,
+    intent_from_commits,
+    load_config,
+    preflight,
+)
 from .demo import TARGET_DIR
 from .fingerprint import verdict_summary
+from .proposal_cache import propose_or_cached
 from .review import ReviewFinding, ReviewRun, render_review_html
 from .verifiers.finding_verifier import FindingVerifier
 from .verifiers.vitest_verifier import RepoProfile
@@ -147,6 +158,91 @@ def demo(fixed: bool = False) -> int:
     return 0
 
 
+def _default_tests_for(target: str) -> str:
+    """Guess the tests file next to the target: foo.ts -> foo.test.ts."""
+    for suffix in (".ts", ".tsx", ".js", ".jsx", ".mjs"):
+        if target.endswith(suffix):
+            stem = target[: -len(suffix)]
+            return f"{stem}.test{suffix}"
+    return ""
+
+
+def review(args) -> int:
+    repo = os.path.abspath(os.path.expanduser(args.repo))
+    cfg = load_config(repo)
+
+    head = args.head or current_branch(repo)
+    base = args.base or cfg.base or (fork_point(repo, head) or "main")
+    target = args.target
+    tests = args.tests or _default_tests_for(target)
+
+    need_critic = cfg.run_critic and not args.no_critic
+    problems = preflight(
+        repo_root=repo, head=head, base=base, target=target, tests=tests,
+        reviewer_model=cfg.reviewer_model, need_critic=need_critic,
+        critic_model=cfg.critic_model,
+    )
+    if problems:
+        print("agentboard review — cannot start:")
+        for p in problems:
+            print(f"  - {p}")
+        return 1
+
+    # intent: --intent > --issue > commit messages on the branch
+    from .ingestion.intent import resolve_intent
+    if args.intent:
+        intent = args.intent
+    elif args.issue:
+        intent = resolve_intent(issue_url=args.issue)
+    else:
+        intent = intent_from_commits(repo, base, head)
+        if not intent:
+            print("agentboard review — cannot start:")
+            print("  - no --intent, no --issue, and no commit messages to derive "
+                  "intent from. Say what the change is meant to do.")
+            return 1
+        print(f"intent: derived from commit message(s) on {head}")
+
+    from .ingestion.pr_diff import diff_blob, load_pr_diff
+    change = ""
+    try:
+        change = diff_blob(load_pr_diff(repo, head=head, base=base))
+        print(f"change: {len(change)} chars ({head} vs {base})")
+    except Exception as e:  # noqa: BLE001
+        print(f"  - could not load the diff ({e}); aborting rather than "
+              "silently reviewing the whole file")
+        return 1
+
+    profile = build_profile(repo, cfg, tests)
+    src = open(os.path.join(repo, target), encoding="utf-8").read()
+    tst = open(os.path.join(repo, tests), encoding="utf-8").read()
+
+    reviewer = ReviewerAgent(repo, target, tests, model=cfg.reviewer_model,
+                             harness_notes=profile.harness_notes)
+    critic = CriticAgent(model=cfg.critic_model) if need_critic else None
+
+    print(f"proposing (reviewer {cfg.reviewer_model}"
+          + (f" + critic {cfg.critic_model}" if need_critic else "") + ")…")
+    findings = propose_or_cached(
+        reviewer, critic, intent=intent, change=change, source=src, tests=tst,
+        fresh=args.fresh,
+    )
+    print(f"  {len(findings)} behavior(s) to gate")
+
+    run = ReviewRun(intent=intent, target=target, findings=findings)
+    verifier = FindingVerifier(repo, profile, tests_file=tests, timeout=args.timeout)
+    verifier.run(run)
+
+    for f in run.findings:
+        print(f"  [{f.status:14}] {f.behavior[:64]}")
+        if f.observed and f.status not in ("handled", "skipped_covered"):
+            print(f"       -> {f.observed[:120]}")
+    board = render_review_html(run, args.board)
+    print(f"\n{verdict_summary(run)}")
+    print(f"{len(run.gaps)} confirmed gap(s). Board: {board}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="agentboard",
@@ -156,9 +252,25 @@ def main(argv: list[str] | None = None) -> int:
     d = sub.add_parser("demo", help="zero-key demo: gate a bundled buggy target")
     d.add_argument("--fixed", action="store_true",
                    help="run against the fixed target (red -> green)")
+
+    r = sub.add_parser("review", help="review a change on a repo before you push")
+    r.add_argument("--repo", default=".", help="path to the repo (default: cwd)")
+    r.add_argument("--target", required=True, help="file the change touches (rel to repo)")
+    r.add_argument("--tests", default="", help="tests file (default: <target>.test.<ext>)")
+    r.add_argument("--head", default="", help="ref to review (default: current branch)")
+    r.add_argument("--base", default="", help="ref to diff against (default: fork point)")
+    r.add_argument("--intent", default="", help="what the change is meant to do")
+    r.add_argument("--issue", default="", help="issue URL to use as intent instead")
+    r.add_argument("--no-critic", action="store_true", help="skip the gap-hunting critic pass")
+    r.add_argument("--fresh", action="store_true", help="resample proposals (ignore cache)")
+    r.add_argument("--timeout", type=int, default=1800, help="per-gate timeout seconds")
+    r.add_argument("--board", default="./review_board.html", help="output board path")
+
     args = parser.parse_args(argv)
     if args.command == "demo":
         return demo(fixed=args.fixed)
+    if args.command == "review":
+        return review(args)
     parser.print_help()
     return 0
 
