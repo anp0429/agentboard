@@ -118,3 +118,39 @@ def test_intent_derived_from_commit_messages(tmp_path):
     _git(repo, "commit", "-qm", "fix null handling when input is empty")
     intent = intent_from_commits(repo, "HEAD~1", "HEAD")
     assert "null handling when input is empty" in intent
+
+
+# --- first-run friction fixes ---
+
+def test_autodetect_handles_zod_style_layout(tmp_path):
+    """errors.ts (source) -> error.test.ts in a separate tests dir. The exact
+    singular/plural + cross-dir shape that forced a manual --tests on zod."""
+    from agentboard.cli import _default_tests_for
+    repo = str(tmp_path)
+    os.makedirs(f"{repo}/src/core")
+    os.makedirs(f"{repo}/src/classic/tests")
+    open(f"{repo}/src/core/errors.ts", "w").close()
+    open(f"{repo}/src/classic/tests/error.test.ts", "w").close()
+    assert _default_tests_for(repo, "src/core/errors.ts") == \
+        "src/classic/tests/error.test.ts"
+
+
+def test_autodetect_prefers_colocated(tmp_path):
+    from agentboard.cli import _default_tests_for
+    repo = str(tmp_path)
+    os.makedirs(f"{repo}/src")
+    open(f"{repo}/src/thing.ts", "w").close()
+    open(f"{repo}/src/thing.test.ts", "w").close()
+    assert _default_tests_for(repo, "src/thing.ts") == "src/thing.test.ts"
+
+
+def test_autodetect_ignores_node_modules(tmp_path):
+    from agentboard.cli import _default_tests_for
+    repo = str(tmp_path)
+    os.makedirs(f"{repo}/node_modules/dep/tests")
+    os.makedirs(f"{repo}/src")
+    open(f"{repo}/src/parser.ts", "w").close()
+    open(f"{repo}/node_modules/dep/tests/parser.test.ts", "w").close()
+    # only the node_modules match exists -> must NOT return it; falls back
+    got = _default_tests_for(repo, "src/parser.ts")
+    assert "node_modules" not in got

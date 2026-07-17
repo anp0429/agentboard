@@ -157,13 +157,17 @@ def preflight(
             f"or fetch it (git fetch origin {base})."
         )
 
-    dirty = subprocess.run(
-        ["git", "-C", repo_root, "status", "--porcelain"],
+    # only TRACKED modifications count as dirty. An untracked file (a fresh
+    # .agentboard.toml, local scratch) doesn't change what HEAD reviews and
+    # must not block the run — this exact false-positive stopped the first
+    # real review until the config was committed.
+    tracked_dirty = subprocess.run(
+        ["git", "-C", repo_root, "status", "--porcelain", "--untracked-files=no"],
         capture_output=True, text=True,
     ).stdout.strip()
-    if dirty:
+    if tracked_dirty:
         problems.append(
-            "working tree has uncommitted changes — the review sees committed "
+            "tracked files have uncommitted changes — the review sees committed "
             "code only; commit or stash so head reflects what you mean."
         )
 

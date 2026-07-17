@@ -158,12 +158,43 @@ def demo(fixed: bool = False) -> int:
     return 0
 
 
-def _default_tests_for(target: str) -> str:
-    """Guess the tests file next to the target: foo.ts -> foo.test.ts."""
+def _default_tests_for(repo: str, target: str) -> str:
+    """Find the tests file for a target. Tries, in order: co-located
+    (foo.test.ts), the same basename under any tests dir, and a
+    singular/plural basename variant (errors.ts <-> error.test.ts, which is
+    exactly the shape that tripped up the first real run on zod). Returns ""
+    if nothing unambiguous is found — the caller then asks for --tests."""
+    import glob as _glob
+
     for suffix in (".ts", ".tsx", ".js", ".jsx", ".mjs"):
-        if target.endswith(suffix):
-            stem = target[: -len(suffix)]
-            return f"{stem}.test{suffix}"
+        if not target.endswith(suffix):
+            continue
+        stem = target[: -len(suffix)]
+        base = os.path.basename(stem)
+
+        # 1. co-located: src/foo.ts -> src/foo.test.ts
+        colocated = f"{stem}.test{suffix}"
+        if os.path.isfile(os.path.join(repo, colocated)):
+            return colocated
+
+        # 2 & 3. search test dirs for <base>.test.<ext>, then singular/plural
+        variants = [base]
+        if base.endswith("s"):
+            variants.append(base[:-1])       # errors -> error
+        else:
+            variants.append(base + "s")      # error  -> errors
+        for name in variants:
+            for pat in (
+                f"**/tests/**/{name}.test{suffix}",
+                f"**/__tests__/**/{name}.test{suffix}",
+                f"**/test/**/{name}.test{suffix}",
+                f"**/{name}.test{suffix}",
+            ):
+                hits = _glob.glob(os.path.join(repo, pat), recursive=True)
+                hits = [h for h in hits if "node_modules" not in h]
+                if len(hits) == 1:
+                    return os.path.relpath(hits[0], repo)
+        return colocated  # fall back to the co-located name for a clear error
     return ""
 
 
@@ -174,7 +205,16 @@ def review(args) -> int:
     head = args.head or current_branch(repo)
     base = args.base or cfg.base or (fork_point(repo, head) or "main")
     target = args.target
-    tests = args.tests or _default_tests_for(target)
+    tests = args.tests or _default_tests_for(repo, target)
+
+    # friendly, specific guidance for the most common first-run stumble:
+    # we couldn't find the tests file and the user didn't say where it is.
+    if not args.tests and not os.path.isfile(os.path.join(repo, tests)):
+        print("agentboard review — couldn't find the tests file.")
+        print(f"  Looked for one matching {target!r} but found nothing "
+              f"unambiguous.")
+        print("  Point me at it directly:  --tests path/to/your.test.ts")
+        return 1
 
     need_critic = cfg.run_critic and not args.no_critic
     problems = preflight(
