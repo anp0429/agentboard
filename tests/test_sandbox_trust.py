@@ -130,3 +130,26 @@ def test_presets_declare_a_probe():
     p = RepoProfile.pnpm_vitest("x", build=False)
     assert p.smoke_cmd is not None
     assert "--passWithNoTests" in p.smoke_cmd
+
+
+# ---------------------------------------------------------------------------
+# run-level banner: one loud failure, never per-finding noise
+# ---------------------------------------------------------------------------
+
+def test_env_failure_is_a_run_level_banner(tmp_path):
+    from agentboard.review import ReviewFinding, ReviewRun, render_review_html
+
+    repo = _repo_with_tests_file(tmp_path)
+    v = FindingVerifier(repo, _profile(["false"]), "tests/suite.test.ts")
+    run = ReviewRun(
+        intent="i", target="t",
+        findings=[ReviewFinding(behavior="a", test_code="test('a', ()=>{})"),
+                  ReviewFinding(behavior="b", test_code="test('b', ()=>{})")],
+    )
+    v.run(run)
+    assert run.env_error.startswith("environment smoke probe failed")
+    board = str(tmp_path / "board.html")
+    render_review_html(run, board)
+    html_out = open(board, encoding="utf-8").read()
+    assert "Environment preparation failed" in html_out
+    assert html_out.count("blocked by environment failure") == 2

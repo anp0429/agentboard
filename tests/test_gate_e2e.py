@@ -20,7 +20,6 @@ skipped cleanly where the toolchain is absent.
 
 from __future__ import annotations
 
-import os
 import shutil
 
 import pytest
@@ -30,7 +29,7 @@ from agentboard.review import ReviewFinding, ReviewRun
 from agentboard.verifiers.finding_verifier import FindingVerifier
 from agentboard.verifiers.vitest_verifier import RepoProfile
 
-FIXTURE = os.path.join(os.path.dirname(__file__), "fixtures", "demo_target")
+from agentboard.demo import TARGET_DIR as FIXTURE  # packaged demo target
 
 pytestmark = pytest.mark.skipif(
     shutil.which("node") is None or shutil.which("npm") is None,

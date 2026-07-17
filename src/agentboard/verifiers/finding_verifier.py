@@ -32,6 +32,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
 
 from ..review import ReviewFinding, ReviewRun
 from .vitest_verifier import RepoProfile, _tail
@@ -145,6 +146,8 @@ class FindingVerifier:
             return
         self._warm_root = tempfile.mkdtemp(prefix="agentboard_warm_")
         repo = os.path.join(self._warm_root, "repo")
+        phases: list[str] = []
+        t0 = time.monotonic()
         shutil.copytree(
             self.repo_root,
             repo,
@@ -152,9 +155,12 @@ class FindingVerifier:
                 ".git", "node_modules", "dist", "__pycache__"
             ),
         )
+        phases.append(f"copy {time.monotonic() - t0:.1f}s")
+        t0 = time.monotonic()
         # the sandbox must BE the repo — a dropped file here would make
         # verdicts depend on copy luck. Fail loudly, never review a ghost.
         diffs = _copy_discrepancies(self.repo_root, repo)
+        phases.append(f"fidelity {time.monotonic() - t0:.1f}s")
         if diffs:
             self._prep_error = "sandbox fidelity check failed: " + "; ".join(diffs)
             self._warm_repo = repo
@@ -168,19 +174,25 @@ class FindingVerifier:
         with open(tpath, encoding="utf-8") as f:
             self._pristine_tests = f.read()
         # install + build ONCE
+        t0 = time.monotonic()
         inst = self._run(self.profile.install_cmd, repo)
+        phases.append(f"install {time.monotonic() - t0:.1f}s")
         if inst.returncode != 0:
             self._prep_error = f"install failed: {_tail(inst.stderr or inst.stdout)}"
         elif self.profile.build_cmd:
+            t0 = time.monotonic()
             bld = self._run(self.profile.build_cmd, repo)
+            phases.append(f"build {time.monotonic() - t0:.1f}s")
             if bld.returncode != 0:
                 self._prep_error = f"build failed: {_tail(bld.stderr or bld.stdout)}"
         # functional smoke probe: prove the runner starts before judging
         # anything. An exit code can lie across toolchain versions; a probe
         # that actually launches the runner cannot.
         if not self._prep_error and getattr(self.profile, "smoke_cmd", None):
+            t0 = time.monotonic()
             try:
                 smoke = self._run(self.profile.smoke_cmd, repo)
+                phases.append(f"smoke {time.monotonic() - t0:.1f}s")
                 if smoke.returncode != 0:
                     self._prep_error = (
                         "environment smoke probe failed: "
@@ -190,6 +202,7 @@ class FindingVerifier:
                 self._prep_error = (
                     f"environment smoke probe did not finish within {self.timeout}s"
                 )
+        print("  warm base: " + ", ".join(phases))
         self._warm_repo = repo
 
     def close(self) -> None:
@@ -334,7 +347,17 @@ class FindingVerifier:
             if not title:
                 continue  # serial path will report it properly
             mark = self._MARK.format(i=i)
-            code = f.test_code.replace(title, f"{mark} {title}", 1)
+            # mark the title inside the test(...) opener itself — a naive
+            # replace can hit a lookalike (comment, string) elsewhere and
+            # leave the real test unmarked -> unattributed -> serial fallback
+            code, n = re.subn(
+                r"""((?:test|it)\(\s*[`'"])""",
+                lambda m: m.group(1) + mark + " ",
+                f.test_code,
+                count=1,
+            )
+            if not n:
+                continue
             injected, _err = _inject(content, code)
             if injected is None:
                 continue
@@ -432,10 +455,33 @@ class FindingVerifier:
             for f in review.findings:
                 if f.covered_by_existing:
                     f.status = "skipped_covered"
+            self._ensure_warm()
+            if self._prep_error:
+                review.env_error = self._prep_error
+                for f in review.findings:
+                    if not f.covered_by_existing:
+                        f.status = "broken_test"
+                        f.observed = "blocked by environment failure (see banner)"
+                return review
             if batch:
+                t0 = time.monotonic()
                 leftover = self._classify_batch(review.findings)
+                t_batch = time.monotonic() - t0
+                t0 = time.monotonic()
                 for i in sorted(leftover):
                     self.classify(review.findings[i])
+                t_serial = time.monotonic() - t0
+                eligible = sum(
+                    1 for f in review.findings if not f.covered_by_existing
+                )
+                print(
+                    f"  gate: batch {t_batch:.1f}s"
+                    + (
+                        f" + serial fallback {t_serial:.1f}s for "
+                        f"{len(leftover)}/{eligible} finding(s)"
+                        if leftover else f", 0/{eligible} fell back"
+                    )
+                )
             else:
                 for f in review.findings:
                     self.classify(f)

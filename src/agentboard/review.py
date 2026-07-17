@@ -43,6 +43,9 @@ class ReviewRun:
     intent: str
     target: str
     findings: list[ReviewFinding] = field(default_factory=list)
+    # set when the environment itself failed (install/build/smoke/fidelity):
+    # a run-level fact, rendered ONCE as a banner — never as per-finding noise
+    env_error: str = ""
 
     @property
     def gaps(self) -> list[ReviewFinding]:
@@ -68,6 +71,10 @@ header { padding:20px 24px; border-bottom:1px solid #d9d8d2; }
 h1 { font-size:18px; font-weight:600; margin:0; }
 .sub { color:#76756e; font-size:13px; margin-top:6px; white-space:pre-wrap; max-width:900px; }
 .summary { padding:14px 24px; font-size:14px; border-bottom:1px solid #d9d8d2; }
+.envfail { padding:14px 24px; font-size:14px; font-weight:600; color:#fff;
+           background:#a32d2d; }
+.envfail .detail { font-weight:400; font-size:13px; margin-top:4px;
+                   font-family:ui-monospace,monospace; }
 .summary b { font-weight:600; }
 .wrap { padding:20px 24px; max-width:920px; }
 .card { border-radius:12px; padding:14px 16px; margin-bottom:12px; border:1px solid #d9d8d2;
@@ -153,11 +160,19 @@ def render_review_html(run: ReviewRun, path: str) -> str:
             f'<div class="meta">{cov}</div>{axis}{extra}</div>'
         )
 
+    banner = ""
+    if run.env_error:
+        banner = (
+            '<div class="envfail">Environment preparation failed — '
+            'no verdicts were issued.'
+            f'<div class="detail">{html.escape(run.env_error)}</div></div>'
+        )
     doc = (
         f"<!doctype html><meta charset=utf-8><title>agentboard review</title>"
         f"<style>{_CSS}</style>"
         f'<header><h1>agentboard — review</h1>'
         f'<div class="sub">Target: {html.escape(run.target)}\n\nIntent: {html.escape(run.intent[:400])}</div></header>'
+        f'{banner}'
         f'<div class="summary"><b>{gaps}</b> confirmed gap(s) · '
         f'<b>{covered}</b> covered/handled · <b>{broken}</b> test didn\'t run · '
         f'<b>{timed}</b> timed out · '

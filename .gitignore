@@ -5,3 +5,5 @@ review_board.html
 .env*
 node_modules/
 package-lock.json
+agentboard_demo_board.html
+review_board.html
