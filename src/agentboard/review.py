@@ -26,6 +26,7 @@ class ReviewFinding:
     coverage_note: str = ""            # why it thinks so (which test, or "none found")
     test_path: str | None = None       # the test it wrote (if uncovered)
     test_code: str | None = None
+    source_file: str = ""              # which target file this finding is about (multi-target)
     status: Status = "pending"         # set by the FindingVerifier after running
     observed: str = ""                 # what the run showed (assertion msg / output / error)
     # advisory precision layer (GapAuditor) — NEVER changes status, triage only

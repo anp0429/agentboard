@@ -304,33 +304,64 @@ def review(args) -> int:
         return 1
 
     profile = build_profile(repo, cfg, tests)
-    src = open(os.path.join(repo, target), encoding="utf-8").read()
-    tst = open(os.path.join(repo, tests), encoding="utf-8").read()
-
-    reviewer = ReviewerAgent(repo, target, tests, model=cfg.reviewer_model,
-                             harness_notes=profile.harness_notes)
     critic = CriticAgent(model=cfg.critic_model) if need_critic else None
 
-    print(f"proposing (reviewer {cfg.reviewer_model}"
-          + (f" + critic {cfg.critic_model}" if need_critic else "") + ")…")
-    findings = propose_or_cached(
-        reviewer, critic, intent=intent, change=change, source=src, tests=tst,
-        fresh=args.fresh,
-    )
-    print(f"  {len(findings)} behavior(s) to gate")
+    # the set of (target, tests) pairs to review. Default: the one --target.
+    # Multi-target (blast radius) appends more pairs; each is reviewed against
+    # the same diff/intent and merged into ONE run so the board and fingerprint
+    # cover the whole change.
+    pairs = _resolve_targets(repo, target, tests, args)
 
-    run = ReviewRun(intent=intent, target=target, findings=findings)
-    verifier = FindingVerifier(repo, profile, tests_file=tests, timeout=args.timeout)
-    verifier.run(run)
+    run = ReviewRun(intent=intent, target=target)
+    for tgt, tst_path in pairs:
+        if len(pairs) > 1:
+            print(f"--- reviewing {tgt} ---")
+        src = open(os.path.join(repo, tgt), encoding="utf-8").read()
+        tst = open(os.path.join(repo, tst_path), encoding="utf-8").read()
+        reviewer = ReviewerAgent(repo, tgt, tst_path, model=cfg.reviewer_model,
+                                 harness_notes=profile.harness_notes)
+        print(f"proposing for {tgt} (reviewer {cfg.reviewer_model}"
+              + (f" + critic {cfg.critic_model}" if need_critic else "") + ")…")
+        findings = propose_or_cached(
+            reviewer, critic, intent=intent, change=change, source=src,
+            tests=tst, fresh=args.fresh,
+        )
+        for f in findings:
+            f.source_file = tgt
+        print(f"  {len(findings)} behavior(s) to gate")
+        sub = ReviewRun(intent=intent, target=tgt, findings=findings)
+        FindingVerifier(repo, profile, tests_file=tst_path,
+                        timeout=args.timeout).run(sub)
+        run.findings.extend(sub.findings)
 
     for f in run.findings:
-        print(f"  [{f.status:14}] {f.behavior[:64]}")
+        tag = f"{f.source_file}: " if len(pairs) > 1 and f.source_file else ""
+        print(f"  [{f.status:14}] {tag}{f.behavior[:60]}")
         if f.observed and f.status not in ("handled", "skipped_covered"):
             print(f"       -> {f.observed[:120]}")
     board = render_review_html(run, args.board)
     print(f"\n{verdict_summary(run)}")
-    print(f"{len(run.gaps)} confirmed gap(s). Board: {board}")
+    print(f"{len(run.gaps)} confirmed gap(s) across {len(pairs)} file(s). "
+          f"Board: {board}")
     return 0
+
+
+def _resolve_targets(repo, target, tests, args):
+    """The (target, tests) pairs to review. Default is the single --target;
+    --also file.ts[:tests.ts] adds more (the foundation blast-radius scoping
+    will populate automatically). Each added file's tests are autodetected
+    unless given as file:tests."""
+    pairs = [(target, tests)]
+    for spec in (getattr(args, "also", None) or []):
+        if ":" in spec:
+            tgt, tst = spec.split(":", 1)
+        else:
+            tgt, tst = spec, _default_tests_for(repo, spec)
+        if not tst or not os.path.isfile(os.path.join(repo, tst)):
+            print(f"  (skipping {tgt}: no tests file found — pass file:tests)")
+            continue
+        pairs.append((tgt, tst))
+    return pairs
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -358,6 +389,8 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--no-critic", action="store_true", help="skip the gap-hunting critic pass")
     r.add_argument("--fresh", action="store_true", help="resample proposals (ignore cache)")
     r.add_argument("--timeout", type=int, default=1800, help="per-gate timeout seconds")
+    r.add_argument("--also", action="append", default=[],
+                   help="additional file to review (repeatable); file or file:tests")
     r.add_argument("--board", default="./review_board.html", help="output board path")
 
     args = parser.parse_args(argv)
