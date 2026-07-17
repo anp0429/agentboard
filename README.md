@@ -27,14 +27,14 @@ participated in a real upstream fix, end to end:
 3. **Implemented the redesign** — `unnest(conkey, confkey) WITH ORDINALITY`
    so column pairing is positional by construction, with a regression test
    using deliberately non-alphabetical column order.
-4. **Validated the fix with the same pipeline.** The reviewer + critic proposed
-   12 behaviors — including cases no human had written tests for:
-   constraint-definition order vs. physical column order, two independent
-   composite FKs between the same table pair, self-referential composite FKs,
-   cross-schema visibility, and output stability across repeated calls.
-   The gate executed all of them against the branch: **0 gaps.**
-   <!-- TODO after 2 more runs: "N distinct behaviors across 3 runs, 0 gaps" -->
-   <!-- TODO after merge: "The fix is merged upstream." + link -->
+4. Validated the fix with the same pipeline. Across 3 review runs, the
+   reviewer + critic proposed 15 distinct behaviors - including cases no
+   human test covered: FKs referencing unique constraints rather than primary
+   keys, empty-set fabrication guards, self-referential composite FKs,
+   cross-schema visibility from either side, and output stability across
+   repeated calls. The gate executed every one against the branch: 0 gaps.
+   Individual runs sample 12–13 of the 15 - coverage is a sampling process,
+   so run the reviewer more than once.
 
 The gate is what separates these findings from the proposals that were just
 opinions.
