@@ -172,3 +172,36 @@ def test_autodetect_disambiguates_by_closest_path(tmp_path):
         open(os.path.join(repo, p), "w").close()
     got = _default_tests_for(repo, "packages/zod/src/v4/core/errors.ts")
     assert got == "packages/zod/src/v4/classic/tests/error.test.ts", got
+
+
+# --- zero-config: vitest project auto-detection + init ---
+
+def test_detects_vitest_project_from_config(tmp_path):
+    from agentboard.config import detect_vitest_projects
+    (tmp_path / "vitest.config.ts").write_text(
+        'export default { test: { projects: [{ test: { name: "zod" } }] } }'
+    )
+    assert detect_vitest_projects(str(tmp_path)) == ["zod"]
+
+
+def test_no_vitest_config_means_no_project(tmp_path):
+    from agentboard.config import detect_vitest_projects
+    assert detect_vitest_projects(str(tmp_path)) == []
+
+
+def test_build_profile_auto_applies_single_project(tmp_path):
+    from agentboard.config import Config, build_profile
+    (tmp_path / "pnpm-lock.yaml").write_text("")
+    (tmp_path / "vitest.config.ts").write_text('name: "mypkg"')
+    prof = build_profile(str(tmp_path), Config(), "x.test.ts")
+    assert "--project" in prof.test_base
+    assert "mypkg" in prof.test_base
+
+
+def test_multiple_projects_not_auto_applied(tmp_path):
+    """Ambiguity is left to the user, not guessed."""
+    from agentboard.config import Config, build_profile
+    (tmp_path / "pnpm-lock.yaml").write_text("")
+    (tmp_path / "vitest.config.ts").write_text('name: "a"\nname: "b"')
+    prof = build_profile(str(tmp_path), Config(), "x.test.ts")
+    assert "--project" not in prof.test_base

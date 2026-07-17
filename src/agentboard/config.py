@@ -56,6 +56,38 @@ def load_config(repo_root: str) -> Config:
     )
 
 
+def detect_vitest_projects(repo_root: str) -> list[str]:
+    """Best-effort list of vitest project names declared in the repo's config.
+
+    Workspace repos (zod, many monorepos) require `--project <name>` or vitest
+    errors with "No projects were found". Guessing it removes the single most
+    common reason a repo needs hand-written config. We scan the common config
+    files for `name: "..."` inside a projects/workspace/test block. Purely
+    heuristic; when unsure we return [] and let the run proceed without
+    --project (correct for non-workspace repos)."""
+    import re
+
+    candidates = [
+        "vitest.config.ts", "vitest.config.js", "vitest.config.mjs",
+        "vitest.workspace.ts", "vitest.workspace.js",
+        "vite.config.ts", "vite.config.js",
+    ]
+    names: list[str] = []
+    for fname in candidates:
+        fpath = os.path.join(repo_root, fname)
+        if not os.path.isfile(fpath):
+            continue
+        try:
+            text = open(fpath, encoding="utf-8").read()
+        except OSError:
+            continue
+        # look for `name: "x"` or `name: 'x'` (project definitions)
+        for m in re.finditer(r"""\bname\s*:\s*['"]([\w.-]+)['"]""", text):
+            if m.group(1) not in names:
+                names.append(m.group(1))
+    return names
+
+
 def detect_profile_kind(repo_root: str) -> str:
     """Infer the package manager from the lockfile. pnpm wins if both exist
     (pnpm repos often keep a stray package-lock around)."""
@@ -70,15 +102,22 @@ def detect_profile_kind(repo_root: str) -> str:
 
 def build_profile(repo_root: str, cfg: Config, tests_file: str) -> RepoProfile:
     kind = cfg.profile_kind or detect_profile_kind(repo_root)
+    project = cfg.project
+    if project is None:
+        detected = detect_vitest_projects(repo_root)
+        # only auto-apply when exactly one project is declared; ambiguity
+        # (multiple projects) is left to the user / --project to avoid guessing
+        if len(detected) == 1:
+            project = detected[0]
     if kind == "npm-vitest":
         prof = RepoProfile.npm_vitest(
             os.path.basename(repo_root.rstrip("/")),
-            project=cfg.project, build=cfg.build,
+            project=project, build=cfg.build,
         )
     else:  # default to pnpm
         prof = RepoProfile.pnpm_vitest(
             os.path.basename(repo_root.rstrip("/")),
-            filter=cfg.filter, project=cfg.project, build=cfg.build,
+            filter=cfg.filter, project=project, build=cfg.build,
         )
     if cfg.harness_notes:
         prof.harness_notes = cfg.harness_notes.strip()

@@ -209,6 +209,45 @@ def _default_tests_for(repo: str, target: str) -> str:
     return ""
 
 
+def init(args) -> int:
+    """Write a starter .agentboard.toml, pre-filled with what we can detect."""
+    from .config import CONFIG_NAME, detect_profile_kind, detect_vitest_projects
+
+    repo = os.path.abspath(os.path.expanduser(args.repo))
+    dest = os.path.join(repo, CONFIG_NAME)
+    if os.path.isfile(dest) and not args.force:
+        print(CONFIG_NAME + " already exists. Use --force to overwrite.")
+        return 1
+
+    kind = detect_profile_kind(repo) or "pnpm-vitest"
+    projects = detect_vitest_projects(repo)
+    if len(projects) == 1:
+        proj_line = 'project = "' + projects[0] + '"'
+    elif projects:
+        proj_line = '# project = "unit"   # multiple detected: ' + ", ".join(projects)
+    else:
+        proj_line = '# project = "unit"   # set if your repo uses vitest projects'
+
+    lines = [
+        "# agentboard config - committed once, shared by everyone reviewing this repo.",
+        'profile = "' + kind + '"',
+        proj_line,
+        'base = "main"',
+        'harness_notes = "Tests already import the framework and helpers - reuse them, do not add import statements."',
+        "",
+    ]
+    with open(dest, "w", encoding="utf-8") as fh:
+        fh.write("\n".join(lines))
+    print("wrote " + CONFIG_NAME)
+    print("  profile: " + kind)
+    if len(projects) == 1:
+        print("  project: " + projects[0] + " (auto-detected)")
+    elif projects:
+        print("  projects detected: " + ", ".join(projects) + " - pick one in the file")
+    print("Review anytime with:  agentboard review --target <file> --intent <what>")
+    return 0
+
+
 def review(args) -> int:
     repo = os.path.abspath(os.path.expanduser(args.repo))
     cfg = load_config(repo)
@@ -304,6 +343,10 @@ def main(argv: list[str] | None = None) -> int:
     d.add_argument("--fixed", action="store_true",
                    help="run against the fixed target (red -> green)")
 
+    i = sub.add_parser("init", help="write a starter .agentboard.toml for this repo")
+    i.add_argument("--repo", default=".", help="path to the repo (default: cwd)")
+    i.add_argument("--force", action="store_true", help="overwrite existing config")
+
     r = sub.add_parser("review", help="review a change on a repo before you push")
     r.add_argument("--repo", default=".", help="path to the repo (default: cwd)")
     r.add_argument("--target", required=True, help="file the change touches (rel to repo)")
@@ -320,6 +363,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.command == "demo":
         return demo(fixed=args.fixed)
+    if args.command == "init":
+        return init(args)
     if args.command == "review":
         return review(args)
     parser.print_help()
