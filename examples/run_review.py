@@ -25,17 +25,27 @@ from agentboard.proposal_cache import propose_or_cached
 from agentboard.review import ReviewRun, render_review_html
 
 # --- edit these --------------------------------------------------------------
-CLONE = os.environ.get("CLONE", "/path/to/your/clone")
-TARGET = "packages/mcp-server-supabase/src/tools/database-docs-tools.ts"
-TESTS = "packages/mcp-server-supabase/src/server.test.ts"
-ISSUE_URL = "https://github.com/supabase/mcp/issues/277"
-GOAL_STRING = None
-PR_HEAD = "pr-278"           # local ref/branch/sha of PR #278; "" to skip the diff
-PR_BASE = "main"             # branch the PR targets (diff is vs the merge-base)
-REVIEWER_MODEL = "gpt-5.5"   # <- swap to "claude-opus-4-8" for the head-to-head
-RUN_CRITIC = True            # <- set False to compare first-pass instinct only (one variable)
-CRITIC_MODEL = "gpt-5.5"     # only used if RUN_CRITIC
-AUDIT_MODEL = "claude-opus-4-8"  # precision layer — use a DIFFERENT model than the proposer
+CLONE = os.environ.get("CLONE", "/Users/ankita/Documents/zod")
+TARGET = "packages/zod/src/v4/core/errors.ts"
+TESTS = "packages/zod/src/v4/classic/tests/error.test.ts"
+ISSUE_URL = None
+GOAL_STRING = """Issue (the problem): z.formatError builds a nested error tree
+keyed by each issue's path elements. When a path element collides with an
+Object.prototype member (toString, constructor, hasOwnProperty, __proto__),
+the tree-building lookup `curr[el] || {...}` picks up the INHERITED prototype
+member instead of creating a fresh node, so formatting throws (or corrupts
+the tree) for schemas whose field names are prototype keys.
+
+PR (the claimed fix): replace the truthiness lookup with an own-property
+check (Object.prototype.hasOwnProperty.call) so a fresh { _errors: [] } node
+is always created for path elements that are prototype keys, at every depth
+of the path. Behavior for ordinary field names is unchanged."""
+PR_HEAD = "pr6181"
+PR_BASE = "main"
+REVIEWER_MODEL = "gpt-5.5"
+RUN_CRITIC = True
+CRITIC_MODEL = "gpt-5.5"
+AUDIT_MODEL = "claude-opus-4-8"
 # -----------------------------------------------------------------------------
 
 
@@ -57,11 +67,22 @@ def main():
             print(f"[warn] could not load PR diff ({e}); reviewing whole file instead\n")
 
     # build only the dependency the tests need; skip the tsc prebuild gate
-    profile = RepoProfile.pnpm_vitest("supabase-mcp",
-        filter="@supabase/mcp-server-supabase", project="unit", build=False)
-    profile.build_cmd = ["pnpm", "--filter", "@supabase/mcp-utils", "build"]
-
-    agent = ReviewerAgent(CLONE, TARGET, TESTS, model=REVIEWER_MODEL)
+    profile = RepoProfile(
+        name="zod",
+        install_cmd=["pnpm", "install", "--frozen-lockfile"],
+        test_base=["npx", "vitest", "run", "--project", "zod",
+                   "packages/zod/src/v4/classic/tests/error.test.ts"],
+        build_cmd=None,
+        env={"CI": "true"},
+        smoke_cmd=["npx", "vitest", "run", "--project", "zod",
+                   "--passWithNoTests", "-t", "___agentboard_env_probe___"],
+    )
+    profile.harness_notes = (
+        "The tests file already imports everything needed (z from zod). "
+        "Use z.object/z.safeParse/z.formatError exactly as neighboring tests do."
+    )
+    agent = ReviewerAgent(CLONE, TARGET, TESTS, model=REVIEWER_MODEL,
+                          harness_notes=profile.harness_notes)
     verifier = FindingVerifier(CLONE, profile, tests_file=TESTS, timeout=2400)
 
     src = open(f"{CLONE}/{TARGET}", encoding="utf-8").read()

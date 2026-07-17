@@ -43,16 +43,26 @@ def _inject(pristine: str, test_code: str) -> tuple[str | None, str]:
 
     Works on the pristine content in memory (not the file on disk) so the warm
     base can inject a DIFFERENT test per finding, each starting from a clean file
-    — never stacking one finding's test on top of another's. Insert before the
-    file's final closing `});` (the describe block's close) so the new test
-    inherits every import and helper, exactly as if added by hand.
+    — never stacking one finding's test on top of another's.
+
+    Placement is load-bearing (learned against zod): if the file wraps its
+    tests in a describe block, insert before its final `});` so the new test
+    inherits describe-scoped helpers. But if the file is TOP-LEVEL test()
+    calls, that same `});` closes the LAST TEST — inserting there nests the
+    proposal inside another test's body, where `-t` skipping means it never
+    registers at runtime while a typecheck project still "passes" it
+    statically. For describe-less files, append at end of file: module
+    imports are inherited there regardless.
     """
     if not test_code:
         return None, "no test supplied"
-    idx = pristine.rstrip().rfind("\n});")
-    if idx == -1:
-        return None, "could not find describe-block close to inject before"
-    return pristine[:idx] + "\n\n" + test_code.rstrip() + "\n" + pristine[idx:], ""
+    code = test_code.rstrip()
+    if "\ndescribe(" in pristine or pristine.startswith("describe("):
+        idx = pristine.rstrip().rfind("\n});")
+        if idx == -1:
+            return None, "could not find describe-block close to inject before"
+        return pristine[:idx] + "\n\n" + code + "\n" + pristine[idx:], ""
+    return pristine.rstrip() + "\n\n" + code + "\n", ""
 
 
 
@@ -246,7 +256,8 @@ class FindingVerifier:
             try:
                 self._run(
                     self.profile.test_base
-                    + ["-t", title, "--reporter=json", f"--outputFile={out}"],
+                    + ["-t", title, "--typecheck.enabled=false",
+                       "--reporter=json", f"--outputFile={out}"],
                     repo,
                 )
             except subprocess.TimeoutExpired:
@@ -374,7 +385,8 @@ class FindingVerifier:
             try:
                 self._run(
                     self.profile.test_base
-                    + ["-t", "___ab", "--reporter=json", f"--outputFile={out}"],
+                    + ["-t", "___ab", "--typecheck.enabled=false",
+                       "--reporter=json", f"--outputFile={out}"],
                     repo,
                 )
             except subprocess.TimeoutExpired:

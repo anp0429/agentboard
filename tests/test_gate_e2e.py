@@ -144,3 +144,23 @@ def test_fixture_baseline_is_green():
     )
     out = verifier.run(run)
     assert out.findings[0].status == "handled", out.findings[0].observed
+
+
+def test_falsifier_can_never_be_handled():
+    """The zod invariant: an injected expect(1).toBe(2) must NEVER classify
+    as handled. On zod, describe-less injection + a typecheck project
+    laundered exactly this into a false green. The gate's word is only worth
+    anything if an impossible test provably executes and fails."""
+    run = ReviewRun(
+        intent="falsifier", target="order_tool.js",
+        findings=[ReviewFinding(
+            behavior="an impossible assertion must fail at runtime",
+            test_code="test('falsifier', () => {\n  expect(1).toBe(2);\n});",
+        )],
+    )
+    verifier = FindingVerifier(
+        FIXTURE, _profile(), tests_file="demo.test.js", timeout=300
+    )
+    out = verifier.run(run)
+    f = out.findings[0]
+    assert f.status == "confirmed_gap", (f.status, f.observed)

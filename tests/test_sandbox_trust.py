@@ -153,3 +153,28 @@ def test_env_failure_is_a_run_level_banner(tmp_path):
     html_out = open(board, encoding="utf-8").read()
     assert "Environment preparation failed" in html_out
     assert html_out.count("blocked by environment failure") == 2
+
+
+# ---------------------------------------------------------------------------
+# injection placement: describe-wrapped vs top-level files (the zod lesson)
+# ---------------------------------------------------------------------------
+
+def test_inject_into_describe_file_goes_inside_the_block():
+    from agentboard.verifiers.finding_verifier import _inject
+    pristine = 'import x\n\ndescribe("d", () => {\n  test("a", () => {});\n});\n'
+    out, err = _inject(pristine, 'test("new", () => {});')
+    assert err == ""
+    assert out.index('test("new"') < out.rindex("});")
+
+
+def test_inject_into_toplevel_file_appends_at_eof_never_nests():
+    from agentboard.verifiers.finding_verifier import _inject
+    pristine = (
+        'import x\n\n'
+        'test("a", () => {\n  expect(1).toBe(1);\n});\n\n'
+        'test("b", () => {\n  expect(2).toBe(2);\n});\n'
+    )
+    out, err = _inject(pristine, 'test("new", () => {});')
+    assert err == ""
+    # the new test must come AFTER test b's close — top level, not nested
+    assert out.rstrip().endswith('test("new", () => {});')
