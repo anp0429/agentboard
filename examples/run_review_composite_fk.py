@@ -21,6 +21,7 @@ from agentboard.agents.gap_auditor import GapAuditor
 from agentboard.verifiers.finding_verifier import FindingVerifier
 from agentboard.verifiers.vitest_verifier import RepoProfile, SUPABASE_MCP
 from agentboard.fingerprint import verdict_summary
+from agentboard.proposal_cache import propose_or_cached
 from agentboard.review import ReviewRun, render_review_html
 
 
@@ -85,22 +86,17 @@ def main():
     )
     verifier = FindingVerifier(CLONE, profile, tests_file=TESTS, timeout=2400)
 
-    print(f"Pass 1 — reviewer ({REVIEWER_MODEL}) deriving intended behaviors…")
-    findings = agent.review(intent, change=change)
-    print(f"  reviewer proposed {len(findings)} behaviors")
-
-    gaps = []
-    if RUN_CRITIC:
-        print(f"Pass 2 — critic ({CRITIC_MODEL}) hunting gaps in that coverage…")
-        src = open(f"{CLONE}/{TARGET}", encoding="utf-8").read()
-        tst = open(f"{CLONE}/{TESTS}", encoding="utf-8").read()
-        critic = CriticAgent(model=CRITIC_MODEL)
-        gaps = critic.critique(intent, src, tst, findings)
-        print(f"  critic proposed {len(gaps)} additional gap case(s):")
-        for g in gaps:
-            print(f"    + {g.behavior[:70]}")
-
-    all_findings = findings + gaps
+    src = open(f"{CLONE}/{TARGET}", encoding="utf-8").read()
+    tst = open(f"{CLONE}/{TESTS}", encoding="utf-8").read()
+    critic = CriticAgent(model=CRITIC_MODEL) if RUN_CRITIC else None
+    print(f"Proposing (reviewer {REVIEWER_MODEL}"
+          + (f" + critic {CRITIC_MODEL}" if RUN_CRITIC else "") + ")…")
+    all_findings = propose_or_cached(
+        agent, critic, intent=intent, change=change, source=src, tests=tst
+    )
+    print(f"  {len(all_findings)} behavior(s) to gate:")
+    for g in all_findings:
+        print(f"    + {g.behavior[:70]}")
     print(f"\nRunning {len(all_findings)} findings through the gate…\n")
 
     review = ReviewRun(intent=intent, target=TARGET, findings=all_findings)
