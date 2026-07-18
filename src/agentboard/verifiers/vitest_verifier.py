@@ -110,7 +110,7 @@ class RepoProfile:
         test += extra_test_args or []
         return cls(
             name=name,
-            install_cmd=["pnpm", "install", "--frozen-lockfile"],
+            install_cmd=["npx", "-y", "pnpm@9", "install", "--no-frozen-lockfile"],
             build_cmd=["pnpm", "-r", "build"] if build else None,
             test_base=test,
             env={"CI": "true", **(env or {})},
