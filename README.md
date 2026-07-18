@@ -152,7 +152,9 @@ verdict-identical by fingerprint.
   scaffolding is implemented.
 - The audit pass is advisory and not yet load-bearing.
 - Vitest (pnpm or npm) is the supported harness.
-
+- Older vitest versions (roughly 0.2x era) do not resolve an explicit test-file path the
+  way current versions do, so the gate can collect zero suites on very old checkouts. 
+  Modern vitest is the supported target.
 ## Design invariants
 
 1. The verifier is deterministic and external. No LLM sits in the accept or
