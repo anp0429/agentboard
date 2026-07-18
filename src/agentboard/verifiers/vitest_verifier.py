@@ -76,17 +76,6 @@ class RepoProfile:
     test_base: list[str]
     build_cmd: list[str] | None = None          # None => no build step
     env: dict[str, str] = field(default_factory=lambda: {"CI": "true"})
-    # Repo-specific rules the reviewer must follow when WRITING tests (harness
-    # setup sequences, required helpers, gotchas). Injected into the reviewer
-    # prompt as data — the prompt itself stays repo-agnostic.
-    harness_notes: str = ""
-    # Cheap functional probe run once after install/build: proves the test
-    # runner actually starts in the warm sandbox (binary present, config
-    # loads, transforms work) BEFORE any finding is judged. Exit codes can be
-    # version-flaky (a pnpm notice once benched an entire run as "install
-    # failed"); a probe that RUNS the runner cannot be fooled by log noise.
-    # None => skip.
-    smoke_cmd: list[str] | None = None
 
     # ---- presets for the common cases --------------------------------------
 
@@ -110,11 +99,10 @@ class RepoProfile:
         test += extra_test_args or []
         return cls(
             name=name,
-            install_cmd=["npx", "-y", "pnpm@9", "install", "--no-frozen-lockfile"],
+            install_cmd=["pnpm", "install", "--frozen-lockfile"],
             build_cmd=["pnpm", "-r", "build"] if build else None,
             test_base=test,
             env={"CI": "true", **(env or {})},
-            smoke_cmd=test + ["--passWithNoTests", "-t", "___agentboard_env_probe___"],
         )
 
     @classmethod
@@ -137,7 +125,6 @@ class RepoProfile:
             build_cmd=["npm", "run", "build"] if build else None,
             test_base=test,
             env={"CI": "true", **(env or {})},
-            smoke_cmd=test + ["--passWithNoTests", "-t", "___agentboard_env_probe___"],
         )
 
 
@@ -147,20 +134,6 @@ SUPABASE_MCP = RepoProfile.pnpm_vitest(
     filter="@supabase/mcp-server-supabase",
     project="unit",
     build=True,
-)
-# Harness rules the reviewer must follow when writing tests for THIS repo.
-# These were previously hardcoded in the reviewer prompt; they are repo
-# knowledge, so they live here and get injected as data.
-SUPABASE_MCP.harness_notes = (
-    "MANDATORY SETUP: the tool operates on a project that must be created "
-    "first. Every test MUST reproduce, in order, the exact setup sequence used "
-    "by the existing tests before calling the tool: create the organization, "
-    "create the project, set the project status to active, then load schema "
-    "via the project's db exec. Never call the tool with a project_id you did "
-    "not create this way — doing so fails with \"Project not found\". Copy this "
-    "setup verbatim from the existing tests and change only the schema you "
-    "load and the assertions you make. Use the same helpers the existing tests "
-    "use (setup/createOrganization/createProject/callTool)."
 )
 
 
