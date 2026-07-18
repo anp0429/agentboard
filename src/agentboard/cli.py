@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -311,6 +312,11 @@ def review(args) -> int:
     # the same diff/intent and merged into ONE run so the board and fingerprint
     # cover the whole change.
     pairs = _resolve_targets(repo, target, tests, args)
+    if getattr(args, "scope", ""):
+        extra = _blast_pairs(repo, base, head, args, have={t for t, _ in pairs})
+        if extra is None:
+            return 1
+        pairs.extend(extra)
 
     run = ReviewRun(intent=intent, target=target)
     for tgt, tst_path in pairs:
@@ -333,6 +339,22 @@ def review(args) -> int:
         FindingVerifier(repo, profile, tests_file=tst_path,
                         timeout=args.timeout).run(sub)
         run.findings.extend(sub.findings)
+        # env_error lives on the per-file sub-run; merging only findings threw
+        # it away, so the banner never rendered anywhere and "see banner"
+        # pointed at nothing. Carry it up, tagged per file in multi-target runs.
+        if sub.env_error:
+            tag = f"{tgt}: " if len(pairs) > 1 else ""
+            run.env_error = (
+                (run.env_error + "\n" if run.env_error else "") + tag + sub.env_error
+            )
+
+    if run.env_error:
+        print("\nENVIRONMENT FAILURE: the test environment could not be "
+              "prepared, so nothing was executed.")
+        print("Verdicts below are not real results. Fix this first:")
+        for line in run.env_error.strip().splitlines():
+            print(f"  {line}")
+        print()
 
     for f in run.findings:
         tag = f"{f.source_file}: " if len(pairs) > 1 and f.source_file else ""
@@ -364,6 +386,154 @@ def _resolve_targets(repo, target, tests, args):
     return pairs
 
 
+_SRC_SUFFIXES = (".ts", ".tsx", ".js", ".jsx", ".mjs")
+
+
+def _changed_files(repo: str, base: str, head: str) -> list[str]:
+    """Repo-relative files changed on head since it diverged from base."""
+    out = subprocess.run(
+        ["git", "diff", "--name-only", f"{base}...{head}"],
+        cwd=repo, capture_output=True, text=True,
+    )
+    return [line.strip() for line in out.stdout.splitlines() if line.strip()]
+
+
+def _rel(repo: str, path: str) -> str:
+    """Normalize a graph-reported path to repo-relative."""
+    p = str(path)
+    ap = p if os.path.isabs(p) else os.path.join(repo, p)
+    try:
+        return os.path.relpath(ap, repo)
+    except ValueError:
+        return p
+
+
+def _is_test_file(path: str) -> bool:
+    base = os.path.basename(path)
+    parts = path.replace("\\", "/").split("/")[:-1]
+    return (".test." in base or ".spec." in base
+            or any(p in ("tests", "__tests__", "test") for p in parts))
+
+
+def _host_tests_for(repo: str, target: str) -> str:
+    """For a file with NO dedicated tests (a coverage gap), find the nearest
+    existing test file to host proposals in: walk up from the target's
+    directory toward the repo root, taking the first *.test.<ext> found at
+    each level (including tests/ and __tests__/ subdirs). Proposals gated in
+    a non-importing host can skew broken_test until scaffolding exists; the
+    gate stays honest either way."""
+    import glob as _glob
+
+    suffix = next((s for s in _SRC_SUFFIXES if target.endswith(s)), None)
+    if suffix is None:
+        return ""
+    repo_abs = os.path.abspath(repo)
+    d = os.path.dirname(os.path.abspath(os.path.join(repo, target)))
+    while d.startswith(repo_abs):
+        hits: list[str] = []
+        for sub in ("", "tests", "__tests__", "test"):
+            hits += _glob.glob(os.path.join(d, sub, f"*.test{suffix}"))
+        hits = sorted(h for h in set(hits) if "node_modules" not in h)
+        if hits:
+            return os.path.relpath(hits[0], repo)
+        if d == repo_abs:
+            break
+        d = os.path.dirname(d)
+    return ""
+
+
+def _blast_pairs(repo, base, head, args, have):
+    """Blast-radius scoping (--scope/--depth). Returns extra (target, tests)
+    pairs; [] when the graph is unavailable (review degrades to the explicit
+    targets); None when the selection exceeds --max-files without --yes
+    (abort so no tokens are spent by surprise). The graph only answers
+    "which files" — the gate still decides everything."""
+    try:
+        from pathlib import Path
+
+        from .graph import blast_radius, depth_costs, ensure_graph, graph_available
+    except Exception:
+        print("  (blast radius unavailable: graph wrapper missing; "
+              "reviewing explicit targets only)")
+        return []
+    if not graph_available():
+        print("  (blast radius unavailable: pip install code-review-graph; "
+              "reviewing explicit targets only)")
+        return []
+
+    print(f"building/updating code graph (incremental, base {base})…")
+    if not ensure_graph(Path(repo), base=base):
+        print("  (graph build failed; reviewing explicit targets only)")
+        return []
+    changed = _changed_files(repo, base, head)
+
+    _memo: dict[str, bool] = {}
+
+    def has_tests(f: str) -> bool:
+        rf = _rel(repo, f)
+        if rf not in _memo:
+            tst = _default_tests_for(repo, rf)
+            _memo[rf] = bool(tst) and os.path.isfile(os.path.join(repo, tst))
+        return _memo[rf]
+
+    rows = depth_costs(Path(repo), changed, base=base,
+                       max_depth=max(args.depth, 3), gap_probe=has_tests)
+    if not rows:
+        print("  (graph returned no impact data; reviewing explicit targets only)")
+        return []
+    print("blast radius cost curve (graph queries only, no tokens spent yet):")
+    for row in rows:
+        marker = "   <- --depth" if row["depth"] == args.depth else ""
+        trunc = " (truncated)" if row.get("truncated") else ""
+        print(f"  depth {row['depth']}: {row['files']} impacted file(s), "
+              f"{row.get('test_gaps', 0)} without findable tests{trunc}{marker}")
+
+    result = blast_radius(Path(repo), changed, base=base, depth=args.depth)
+    if result is None:
+        print("  (impact query failed; reviewing explicit targets only)")
+        return []
+
+    candidates: list[str] = []
+    for f in result["impacted_files"]:
+        rf = _rel(repo, f)
+        if rf in have or rf in candidates:
+            continue
+        if _is_test_file(rf) or not rf.endswith(_SRC_SUFFIXES):
+            continue
+        if not os.path.isfile(os.path.join(repo, rf)):
+            continue
+        candidates.append(rf)
+
+    if args.scope == "changed":
+        changed_set = set(changed)
+        selected = [f for f in candidates if f in changed_set]
+    elif args.scope == "test-gaps":
+        selected = [f for f in candidates if not has_tests(f)]
+    else:
+        selected = candidates
+
+    print(f"scope '{args.scope}' at depth {args.depth}: "
+          f"{len(selected)} additional file(s) selected for the gate")
+    if len(selected) > args.max_files and not args.yes:
+        print(f"  exceeds --max-files {args.max_files}. Re-run with --yes to "
+              "confirm the spend, or lower --depth / tighten --scope.")
+        return None
+
+    extra: list[tuple[str, str]] = []
+    for f in selected:
+        tst = _default_tests_for(repo, f) if has_tests(f) else ""
+        if not tst:
+            tst = _host_tests_for(repo, f)
+            if tst:
+                print(f"  (gap file {f}: hosting proposals in {tst})")
+        if not tst or not os.path.isfile(os.path.join(repo, tst)):
+            print(f"  (skipping {f}: no tests file found — pass {f}:tests "
+                  "via --also)")
+            continue
+        extra.append((f, tst))
+    return extra
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="agentboard",
@@ -391,6 +561,16 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--timeout", type=int, default=1800, help="per-gate timeout seconds")
     r.add_argument("--also", action="append", default=[],
                    help="additional file to review (repeatable); file or file:tests")
+    r.add_argument("--scope", default="", choices=["changed", "test-gaps", "all"],
+                   help="blast-radius scoping via the code graph: changed = "
+                        "changed files only, test-gaps = impacted files "
+                        "without findable tests, all = every impacted file")
+    r.add_argument("--depth", type=int, default=2,
+                   help="blast-radius hops (only with --scope; default 2)")
+    r.add_argument("--max-files", type=int, default=20,
+                   help="require --yes past this many scoped files (default 20)")
+    r.add_argument("--yes", action="store_true",
+                   help="confirm a scoped selection larger than --max-files")
     r.add_argument("--board", default="./review_board.html", help="output board path")
 
     args = parser.parse_args(argv)

@@ -152,7 +152,7 @@ def test_env_failure_is_a_run_level_banner(tmp_path):
     render_review_html(run, board)
     html_out = open(board, encoding="utf-8").read()
     assert "Environment preparation failed" in html_out
-    assert html_out.count("blocked by environment failure") == 2
+    assert html_out.count("not executed: environment failure") == 2
 
 
 # ---------------------------------------------------------------------------

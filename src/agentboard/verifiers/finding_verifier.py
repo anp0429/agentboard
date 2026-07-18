@@ -505,7 +505,7 @@ class FindingVerifier:
                 for f in review.findings:
                     if not f.covered_by_existing:
                         f.status = "broken_test"
-                        f.observed = "blocked by environment failure (see banner)"
+                        f.observed = "not executed: environment failure (see banner above)"
                 return review
             if batch:
                 t0 = time.monotonic()
