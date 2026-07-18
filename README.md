@@ -1,124 +1,165 @@
 # agentboard
 
-**Review your change by running tests against it — before you push.**
-
-An LLM proposes the behaviors your change should satisfy, each as a real test.
-A deterministic gate then runs every test against your actual code in a clean
-checkout. A behavior is only reported as a gap if its test compiles, runs, and
-fails. **No model sits in the pass/fail decision** — a model that writes a bad
-test can't manufacture a bug, and one that misreads your code can't wave a real
-one through.
-
-Point it at a branch, a PR, or just your uncommitted-then-committed work:
+A pre-checkin review gate that verifies changes by executing tests, not by
+judging diffs. An LLM proposes edge-case tests from your intent and your
+change. A deterministic harness runs each test against the real code in a
+clean checkout. A behavior is reported as a gap only if its test compiles,
+runs, and fails. No model is involved in the pass or fail decision.
 
 ```
-agentboard review --target src/thing.ts --intent "what the change should do"
+agentboard review --target src/parser.ts --intent "handle empty input"
 ```
 
-## Why not an LLM reviewer
+## Why
 
-LLM code reviewers read a diff and give an opinion. When they're wrong, they're
-wrong silently — there's nothing to check the opinion against. agentboard's
-verdict is an executed test: it passed, it failed, it didn't compile, it timed
-out. Four facts, no opinions. If the gate says a behavior fails, you can run the
-test yourself and watch it fail. That's the whole difference — **evidence you
-can reproduce, not judgment you have to trust.**
+LLM code reviewers read a diff and return an opinion. There is nothing to
+check the opinion against. agentboard's verdict is an executed test: it
+passed, it failed, it did not compile, or it timed out. Every reported gap
+comes with a test you can run yourself and watch fail.
 
-## Try it in 30 seconds (no API key)
+## Quick start
+
+The demo runs without an API key:
 
 ```
 pip install -e .
-agentboard demo          # gate a bundled buggy target — a gap appears
-agentboard demo --fixed  # same gate, bug fixed — red to green
+agentboard demo
+agentboard demo --fixed
 ```
 
-The demo runs the real gate against a small bundled project with one planted
-bug. No key needed: the LLM's job (proposing tests) is pre-done, so what you
-watch is the part that makes agentboard trustworthy — the gate deciding.
+It gates a small bundled project with one planted bug. Proposals are
+pre-generated, so the demo exercises the deterministic part of the pipeline:
+the gate finds the gap, and finds it resolved on the fixed variant.
 
-## Reviewing your own change
+## Usage
 
-Drop an `.agentboard.toml` at your repo root once (profile is auto-detected
-from your lockfile if you skip it):
+Add an `.agentboard.toml` at your repo root, or skip it: the profile is
+auto-detected from your lockfile.
 
 ```toml
 base = "main"
-project = "unit"          # if your repo uses vitest projects
+project = "unit"
 harness_notes = "Tests already import the framework; reuse existing helpers."
 ```
 
-Then, before you push:
+Review a change before pushing:
 
 ```
 agentboard review --repo . --target src/parser.ts --intent "handle empty input"
 ```
 
-Head defaults to your current branch, base to its fork point, tests to the file
-next to your target. Intent can come from `--intent`, an `--issue <url>`, or —
-if you pass neither — your branch's own commit messages. A fail-fast pre-flight
-checks refs, files, and keys before spending a token, so a misconfigured run
-tells you in two seconds, not five minutes in.
+Defaults: head is your current branch, base is its fork point, and the tests
+file is auto-detected next to the target (with closest-path disambiguation in
+monorepos). Intent can come from `--intent`, from `--issue <url>`, or from the
+branch's commit messages if you pass neither. A preflight validates refs,
+files, and keys before any tokens are spent.
 
-## Early real-world runs
+## Multi-file reviews
 
-Pointed at live PRs in repos it had never seen, with no per-repo tuning beyond a
-few lines of config:
+Add files explicitly:
 
-- **[supabase/mcp#317](https://github.com/supabase/mcp/pull/317)** — proposed
-  tests reproduced a bug on `main`: composite foreign keys returned as a
-  cartesian product (an N-column key reported N² pairings, inventing
-  relationships that don't exist). Reported, fixed, and the edge-case tests the
-  tool generated — self-referential, cross-schema, non-primary-unique, multi-FK,
-  three-column — went into the PR.
-- **[colinhacks/zod#6181](https://github.com/colinhacks/zod/pull/6181)** — ran
-  the same suite against both the base and a fix branch. It confirmed the fix
-  resolved a crash across 11 shapes, and surfaced one residual case the fix
-  didn't cover (a `__proto__` path element, where node creation via
-  bracket-assignment sets the prototype instead of an own key). Verified in
-  plain JS, then verified the remedy red→green with no regression.
+```
+agentboard review --target src/parser.ts --also src/lexer.ts --also src/ast.ts:tests/ast.test.ts
+```
 
-Both findings were checked by running code, and both are reproducible by hand.
+`--also` is repeatable. Tests are auto-detected per file; pass `file:tests`
+to override. Files with no findable tests are skipped with a note.
 
-## The loop
+Or select files by the blast radius of the change:
 
-1. **propose** — an LLM reads the intent and the diff and proposes behaviors,
-   each as a test. A second-pass critic hunts gaps in that coverage.
-2. **gate** — each test runs against the real code in a clean checkout.
-   Deterministic, external, no LLM. Verdict: `handled`, `confirmed_gap`,
-   `broken_test`, or `timed_out`.
-3. **classify + board** — verdicts render to a review board; a run fingerprint
-   lets any two runs be compared with one string.
-4. **audit (advisory)** — a *different* model flags possible false positives on
-   confirmed gaps. Advisory only; it never changes a verdict.
+```
+agentboard review --target src/parser.ts --scope all --depth 2
+```
+
+`--scope` computes which files a change impacts, using
+[code-review-graph](https://github.com/tirth8205/code-review-graph) as the
+graph engine. It is an optional dependency: if it is not installed, the
+review falls back to the explicit targets. Scopes:
+
+| Scope | Selects |
+| --- | --- |
+| `changed` | files changed in the diff |
+| `test-gaps` | impacted files with no findable tests |
+| `all` | every impacted file within `--depth` hops |
+
+Before proposals begin, a per-depth cost curve prints the impacted file count
+and test-gap count at each depth. Selections larger than `--max-files`
+(default 20) require `--yes`. The graph decides only which files are in
+scope; every selected file goes through the same gate as a single-target run.
+
+## How it works
+
+1. Propose. An LLM reads the intent and the diff and proposes behaviors, each
+   as a runnable test. A second-pass critic looks for gaps in that coverage.
+2. Gate. Each test runs against the real code in a clean checkout. The gate
+   is deterministic and contains no LLM. Verdicts: `handled`,
+   `confirmed_gap`, `broken_test`, `timed_out`, `skipped_covered`.
+3. Board. Verdicts render to an HTML review board. A run fingerprint lets any
+   two runs be compared with one string.
+4. Audit. A different model flags possible false positives on confirmed gaps.
+   The audit is advisory and never changes a verdict.
+
+## Caching and cost
+
+Proposing tests is the only step that costs tokens, so it is the step that is
+cached. Proposals are keyed by intent, diff, and target; re-running an
+unchanged review reuses the cached set for zero tokens, and the cache id is
+printed when that happens. The gate always re-runs, since executing tests is
+cheap and re-verifying is the point.
+
+The gate is batched: one harness invocation gates many behaviors, with a
+serial fallback per behavior where batching cannot isolate a result. Batched
+and serial paths are asserted verdict-identical by fingerprint. With
+`--scope`, the cost curve prints before any spend.
+
+## Results from real repositories
+
+- [supabase/mcp#317](https://github.com/supabase/mcp/pull/317): proposed
+  tests reproduced a bug on main. Composite foreign keys in `list_tables`
+  returned the cartesian product of column pairs, so an N-column key reported
+  N² pairings, most of which do not exist in the schema. The fix and the
+  generated regression tests (self-referential, cross-schema,
+  non-primary-unique, multi-FK, three-column) are merged into main.
+- [colinhacks/zod#6181](https://github.com/colinhacks/zod/pull/6181): ran the
+  same proposed suite against the base and the fix branch. The run confirmed
+  the fix resolves a crash across 11 shapes and surfaced one residual case
+  involving a `__proto__` path element, where bracket assignment sets the
+  prototype instead of an own key. The residual was verified in plain
+  JavaScript, and a remedy was verified red to green with no regressions.
+
+Both findings were produced by executing tests and both are reproducible by
+hand.
 
 ## Reliability
 
-The gate's determinism is the product, so it's tested as such: the
-classification path is checked for byte-identical verdicts across 1,000 runs per
-verdict class on every CI push, and a falsifier test (`expect(1).toBe(2)`) must
-always classify as a real failure — if an impossible test ever reads as passing,
-CI fails. Batched and serial gate paths are asserted verdict-identical by
-fingerprint, so speed work can never silently change a result.
+The classification path is checked for byte-identical verdicts across 1,000
+runs per verdict class on every CI push. A falsifier test (`expect(1).toBe(2)`)
+must always classify as a real failure; if an impossible test ever reads as
+passing, CI fails. Batched and serial gate paths are asserted
+verdict-identical by fingerprint.
 
-## Honest status
+## Limitations
 
-- The gate is the reliable part. It runs fast (a batched run gates many
-  behaviors in one invocation; unchanged inputs reuse cached proposals for zero
-  tokens).
-- Coverage is a sampling process: the proposer reaches the *topic* reliably but
-  samples *which* edge cases. Run it more than once; different runs find
-  overlapping-but-not-identical sets.
-- One target file + one tests file per run today. Multi-file changes aren't
-  scoped yet.
-- The advisory auditor under-commits and isn't yet load-bearing.
-- Vitest (pnpm/npm) is the supported harness today.
+- Proposal coverage is a sampling process. The proposer reaches the topic
+  reliably but samples which edge cases; repeated runs find overlapping but
+  not identical sets.
+- Graph scoping depends on the engine's import resolution. Repositories that
+  route exports through barrel files (`export * from` chains) can
+  under-report their radius. The cost curve shows what the graph sees before
+  anything is spent, and `--also` works regardless.
+- Impacted files without their own tests are gated in the nearest existing
+  test file, which can skew results toward `broken_test` until test
+  scaffolding is implemented.
+- The audit pass is advisory and not yet load-bearing.
+- Vitest (pnpm or npm) is the supported harness.
 
 ## Design invariants
 
-1. The verifier is deterministic and external. No LLM in the accept/reject path.
-2. Correctness comes from running the code fresh — not from memory, not from a
-   second model agreeing, not from a test the proposing model authored without a
-   real red→green transition.
-3. A second model may flag disagreement; it never votes. Conflicts surface for a
-   human, never averaged away.
+1. The verifier is deterministic and external. No LLM sits in the accept or
+   reject path.
+2. Correctness comes from running the code fresh, not from memory, not from a
+   second model agreeing, and not from a test that never made a red to green
+   transition.
+3. A second model may flag disagreement. It never votes, and conflicts
+   surface for a human instead of being averaged away.
 4. Every proposal is verified against a clean tree.
