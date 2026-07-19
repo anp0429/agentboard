@@ -159,6 +159,26 @@ def demo(fixed: bool = False) -> int:
     return 0
 
 
+def _tests_from_diff(repo: str, base: str, head: str) -> list[str]:
+    """Test files the reviewed change itself touches. When basename
+    autodetect finds nothing, the change's own diff is the next-best
+    deterministic signal: a fix that came with a test names its tests file
+    for us, and that file is exactly where proposals belong."""
+    r = subprocess.run(
+        ["git", "-C", repo, "diff", "--name-only", f"{base}...{head}"],
+        capture_output=True, text=True,
+    )
+    out: list[str] = []
+    for line in r.stdout.splitlines():
+        f = line.strip()
+        if not f:
+            continue
+        b = os.path.basename(f)
+        if (".test." in b or ".spec." in b) and os.path.isfile(os.path.join(repo, f)):
+            out.append(f)
+    return out
+
+
 def _default_tests_for(repo: str, target: str) -> str:
     """Find the tests file for a target. Tries, in order: co-located
     (foo.test.ts), the same basename under any tests dir, and a
@@ -261,11 +281,21 @@ def review(args) -> int:
     # friendly, specific guidance for the most common first-run stumble:
     # we couldn't find the tests file and the user didn't say where it is.
     if not args.tests and not os.path.isfile(os.path.join(repo, tests)):
-        print("agentboard review — couldn't find the tests file.")
-        print(f"  Looked for one matching {target!r} but found nothing "
-              f"unambiguous.")
-        print("  Point me at it directly:  --tests path/to/your.test.ts")
-        return 1
+        diff_tests = _tests_from_diff(repo, base, head)
+        if len(diff_tests) == 1:
+            tests = diff_tests[0]
+            print(f"tests: {tests} (the change's own diff names it)")
+        else:
+            print("agentboard review — couldn't find the tests file.")
+            print(f"  Looked for one matching {target!r} but found nothing "
+                  f"unambiguous.")
+            if diff_tests:
+                print("  The change itself touches these test files; pass one:")
+                for t in diff_tests:
+                    print(f"    --tests {t}")
+            else:
+                print("  Point me at it directly:  --tests path/to/your.test.ts")
+            return 1
 
     need_critic = cfg.run_critic and not args.no_critic
     problems = preflight(
