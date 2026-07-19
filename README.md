@@ -22,7 +22,7 @@ comes with a test you can run yourself and watch fail.
 The demo runs without an API key:
 
 ```
-pip install -e .
+pip install -e .   # Python 3.11+
 agentboard demo
 agentboard demo --fixed
 ```
@@ -49,9 +49,11 @@ agentboard review --repo . --target src/parser.ts --intent "handle empty input"
 ```
 
 Defaults: head is your current branch, base is its fork point, and the tests
-file is auto-detected next to the target (with closest-path disambiguation in
-monorepos). Intent can come from `--intent`, from `--issue <url>`, or from the
-branch's commit messages if you pass neither. A preflight validates refs,
+file is auto-detected: co-located or basename-matched (with closest-path
+disambiguation in monorepos), falling back to the test file the reviewed diff
+itself touches when the diff names exactly one. Intent can come from
+`--intent`, from `--issue <url>`, or from the branch's commit messages if you
+pass neither. A preflight validates refs,
 files, and keys before any tokens are spent.
 
 ## Multi-file reviews
@@ -152,9 +154,13 @@ verdict-identical by fingerprint.
   scaffolding is implemented.
 - The audit pass is advisory and not yet load-bearing.
 - Vitest (pnpm or npm) is the supported harness.
-- Older vitest versions (roughly 0.2x era) do not resolve an explicit test-file path the
-  way current versions do, so the gate can collect zero suites on very old checkouts. 
-  Modern vitest is the supported target.
+- Current vitest is the supported target. Very old checkouts (vitest 0.2x
+  era) tend to fail at environment preparation for toolchain reasons that
+  predate agentboard; the run reports this as an environment failure rather
+  than producing verdicts.
+- pnpm repos are driven through a pinned modern pnpm (`npx pnpm@9`),
+  deliberately ignoring the repo's `packageManager` field: corepack would
+  otherwise re-pin to an old pnpm that cannot run on current Node.
 ## Design invariants
 
 1. The verifier is deterministic and external. No LLM sits in the accept or
