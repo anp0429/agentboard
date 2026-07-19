@@ -227,6 +227,21 @@ def _default_tests_for(repo: str, target: str) -> str:
                 # only accept if it's meaningfully close (shares more than repo root)
                 if _shared(best) > len(repo):
                     return os.path.relpath(best, repo)
+
+        # 4. sole test file in the target's own directory. Covers the common
+        # one-suite-per-module-directory layout that neither co-location nor
+        # basename matching reaches (agentboard's own demo fixture: a
+        # directory holding order_tool.js and demo.test.js). "Exactly one"
+        # is the guard: with two or more there is nothing to infer, so we
+        # fall through to asking for --tests rather than guessing.
+        siblings: list[str] = []
+        for sfx in (".ts", ".tsx", ".js", ".jsx", ".mjs"):
+            for pat in (f"*.test{sfx}", f"*.spec{sfx}"):
+                siblings += _glob.glob(os.path.join(target_dir, pat))
+        siblings = sorted({s for s in siblings if "node_modules" not in s})
+        if len(siblings) == 1:
+            return os.path.relpath(siblings[0], repo)
+
         return colocated  # fall back to the co-located name for a clear error
     return ""
 
