@@ -189,6 +189,30 @@ catch a false positive, once citing the buggy line as if it were the
 contract — which is exactly why the verdict comes from execution and never
 from a model.
 
+## Every run is training data
+
+The gate is a reward function with no model in it, so every finding is a
+labeled example: the inputs the proposer saw, the test it wrote, and the
+executed verdict. `--dataset` appends one JSONL row per finding to a growing
+corpus.
+
+```
+agentboard review --target src/parser.ts --intent "handle empty input" --dataset
+```
+
+Each row stores the proposal and the executed verdict. The honest label is
+`ran` (did the test execute), derived only from the gate's status; the
+advisory audit is stored alongside but never overwrites it. Collection is
+opt-in and append-only, writing to `~/.agentboard/dataset.jsonl` by default.
+Existing `--json-out` artifacts can be backfilled, so a corpus can start from
+runs that predate the collector (the benchmark seeds ~260 rows on its own).
+
+The data is not yet used in the loop; it is the substrate for the model work
+in [ROADMAP.md](ROADMAP.md) (run an open model against the same benchmark,
+then train the proposer on gate outcomes). Rows collected from public repos
+are clean to keep; any future company deployment keeps its own data local and
+never comingled, by design.
+
 ## Reliability
 
 The classification path is checked for byte-identical verdicts across 1,000

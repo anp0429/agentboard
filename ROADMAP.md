@@ -24,9 +24,12 @@ break the core thesis.
 
 ## Known weaknesses (measured or observed)
 
-- **Coverage is not yet fully reliable.** The reviewer reaches the bug-triggering
-  case on most runs, not every run. Reliability is being measured (N-run count in
-  `examples/run_reliability_5x.py`) before claiming more.
+- **Coverage is a sampling process, now measured.** The reviewer reaches the
+  topic reliably but samples which edge cases, so runs find overlapping-but-not-
+  identical sets. This is measured by the cross-repo benchmark (`BENCHMARK.md`),
+  not asserted: 8 of 12 rows caught a real bug, 4 exact strict catches, with the
+  misses published. The gate's verdict, separately, is deterministic (byte-
+  identical fingerprints across runs and across days).
 - **Precision layer (gap auditor) under-commits.** It correctly runs against the
   whole change, but still returns `uncertain` on some real gaps instead of
   committing with evidence. It is advisory only and never changes the gate's
