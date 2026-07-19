@@ -56,3 +56,24 @@ def test_first_line_only_and_bounded():
     )
     assert kind == "assertion"
     assert first == "AssertionError: expected a to equal b"
+
+
+def test_vitest3_timeout_placeholder_is_timeout():
+    # vitest 3's JSON reporter loses the human timeout message: the
+    # failureMessage is the internal stack-donor's stack, headed by its
+    # placeholder name. That header is the timeout signal.
+    msg = (
+        "Error: STACK_TRACE_ERROR\n"
+        "    at task (node_modules/@vitest/runner/dist/chunk-hooks.js:638:27)"
+    )
+    assert _kind(msg) == "timeout"
+
+
+def test_vitest3_placeholder_must_head_the_message():
+    # The placeholder classifies as timeout only as the FIRST line. A test
+    # that merely mentions the string deeper in a stack keeps its own head.
+    msg = (
+        "AssertionError: expected 1 to be 2\n"
+        "    at Error: STACK_TRACE_ERROR somewhere deep"
+    )
+    assert _kind(msg) == "assertion"

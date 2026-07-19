@@ -353,6 +353,15 @@ class FindingVerifier:
         first = fm.strip().splitlines()[0][:200] if fm.strip() else ""
         if "timed out" in fm.lower():
             return "timeout", first
+        # vitest 3 serializes its per-test timeout through a stack-donor
+        # placeholder: the reported failureMessage is the placeholder's stack,
+        # headed "Error: STACK_TRACE_ERROR", and the human timeout message
+        # does not survive into the JSON reporter. The placeholder header IS
+        # the timeout signal. A user test could only fake it by throwing that
+        # exact message, and the misfile would land in timed_out (ambiguity,
+        # a human's job) — the conservative direction, never a minted gap.
+        if first == "Error: STACK_TRACE_ERROR":
+            return "timeout", "test timed out (vitest 3 placeholder serialization)"
         if "AssertionError" in fm:
             return "assertion", first
         return "load_error", first
