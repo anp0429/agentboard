@@ -9,7 +9,7 @@ from active TypeScript repositories, and publishes the misses.
 For each row:
 
 1. Pick a bugfix PR that is already merged into an active repo.
-2. Check out the PR's **parent** commit — the code exactly as it was before
+2. Check out the PR's **parent** commit: the code exactly as it was before
    the fix. The bug is present.
 3. Run agentboard with a **neutral intent** that describes what the module
    is for, never what the bug is. PR titles telegraph the answer, so the PR
@@ -27,7 +27,7 @@ appears only as a disclosed reference case in the README.
 
 Every gap in this table was adjudicated by reading the fix diff or the
 source at the parent commit. The auditor's advisory calls were **not**
-trusted as scores — see the auditor-inversion note below for why that
+trusted as scores; see the auditor-inversion note below for why that
 matters.
 
 ## Results
@@ -66,7 +66,7 @@ missed. 0 environment failures.**
 vueuse `useFetch`, at the parent of #5525, neutral intent "fetch a URL
 reactively with abort and refetch support":
 
-- `const data = shallowRef<T | null>(initialData || null)` — `||` coerces a
+- `const data = shallowRef<T | null>(initialData || null)`: `||` coerces a
   valid falsy `initialData` (`0`, `''`, `false`) to `null`. Should be `??`.
 - `headersToObject` only handles `Headers` instances, silently dropping
   array-form `HeadersInit` (`[['authorization', ...]]`).
@@ -74,7 +74,7 @@ reactively with abort and refetch support":
 Neither is what #5525 fixed. Both are real, both were found from a neutral
 intent, both have an executed failing test attached.
 
-## The auditor inverted, twice — and that is the point
+## The auditor inverted, twice, and that is the point
 
 The auditor is a second model (Claude) that reads the source and flags
 confirmed gaps it believes assert something the code never promised. It is
@@ -85,7 +85,7 @@ On two rows it called a **real strict catch** a false positive:
 - **r2 (ufo #313):** the code matched `/api` as a prefix of `/api-v2`. The
   auditor called the failing test a wrong assumption.
 - **r9 (query #10812):** the comparator `(a, b) => a < b ? 1 : -1` never
-  returns `0` for ties, violating the comparator contract — the exact thing
+  returns `0` for ties, violating the comparator contract, the exact thing
   #10812 fixed. The auditor flagged it a false positive **and cited the
   buggy line as evidence**, mistaking the bug for the contract.
 
@@ -95,12 +95,12 @@ relies on, or it downgrades) made the auditor's output more useful but did
 specification. This is the benchmark's most important finding, and it is the
 thesis proving itself inside the tool. The judging model was confidently
 wrong. Execution was right. That is exactly why the verdict comes from the
-gate and never from a model — the auditor is a lead, not a ruling, and every
+gate and never from a model. The auditor is a lead, not a ruling, and every
 gap in this table was adjudicated by a human reading source.
 
 ## Misses, in daylight
 
-- **s2 (supabase #329):** four gaps, all false positives — the proposals
+- **s2 (supabase #329):** four gaps, all false positives. The proposals
   asserted `.length` on a formatted string result. The real fix (a 403
   org-scoping error message) was never approached. The auditor correctly
   flagged all four.
@@ -115,7 +115,7 @@ gap in this table was adjudicated by a human reading source.
   proposer asserted the wrong remedy (expected `__proto__` as a visible data
   key) rather than the real defect (prototype pollution). The bug class was
   right, the assertion was wrong. Same bug class as defu #156, opposite
-  outcome — see below.
+  outcome (see below).
 
 ## Assertion quality is the frontier
 
@@ -123,8 +123,8 @@ defu #156 and zod #5898 are both `__proto__` bugs. defu's proposal asserted
 *the prototype was not polluted* and caught the bug. zod's asserted
 *`__proto__` should appear as a data key* and missed it, producing a false
 positive on a real defect. Same vulnerability, opposite result, decided
-entirely by what the model chose to assert. Improving assertion quality —
-not reaching the topic — is the open problem this benchmark surfaces, and it
+entirely by what the model chose to assert. Improving assertion quality,
+not reaching the topic, is the open problem this benchmark surfaces, and it
 is the training signal behind the roadmap's model work.
 
 ## Determinism receipts

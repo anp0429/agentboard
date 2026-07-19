@@ -174,13 +174,13 @@ This exposes one tool, `review`, which returns the same schema_version-1
 artifact as `--json-out`. It defaults to `--worktree` mode: the diff is the
 working tree's uncommitted edits and the sandbox executes that same on-disk
 state, which is the question an agent mid-session is actually asking.
-`intent` is required — the calling agent states what its change is meant to
+`intent` is required: the calling agent states what its change is meant to
 do; nothing is derived from commit messages.
 
 The server is the same thin adapter as the GitHub Action: it builds the
 CLI's own arguments and runs the same `review()` path, and a parity test
 fails if the two ever accept different flags. Verdicts stay advisory here
-too — the tool returns findings with their test source and observed output;
+too. The tool returns findings with their test source and observed output;
 it never raises on a confirmed gap, because deciding what a gap means is
 the calling agent's (and ultimately a human's) job.
 
@@ -244,7 +244,7 @@ caught the fix's neighborhood and two additional bugs the PR never touched.
 Four rows missed and are documented in full. The benchmark also records the
 tool's most useful failure: the advisory auditor twice called a real strict
 catch a false positive, once citing the buggy line as if it were the
-contract — which is exactly why the verdict comes from execution and never
+contract, which is exactly why the verdict comes from execution and never
 from a model.
 
 ## Every run is training data

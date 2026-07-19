@@ -1,7 +1,7 @@
 # Roadmap & status
 
 Honest state of the project. What works, what's stubbed, what's next.
-The design invariants at the bottom are load-bearing — changes that break them
+The design invariants at the bottom are load-bearing: changes that break them
 break the core thesis.
 
 ## What works today (verified)
@@ -18,7 +18,7 @@ break the core thesis.
   1. composite foreign keys returned as a cartesian product of columns,
   2. trigger-function classification coupled to an unrelated request flag.
 - **Warm-base verifier.** Install/build once per run, reset + inject + run per
-  finding — instead of a full reinstall per finding.
+  finding, instead of a full reinstall per finding.
 - **Diff ingestion.** Reviews the PR's actual changed lines (vs the merge-base),
   fed whole, not a single hand-picked file.
 
@@ -107,26 +107,26 @@ rewards, applied to code review. The ladder, cheapest rung first:
   fix regresses, surface it as a Conflict and pause for a human decision. Logic is
   stubbed; not wired to the fix stage.
 - [ ] **Everything on the board.** Findings, proposed fixes, the gate's verdict on
-  each fix, conflicts, human decisions — all projected to `board.html` as the audit
+  each fix, conflicts, human decisions, all projected to `board.html` as the audit
   trail.
 - [ ] **Memory (last).** Cache verdicts by (intent + code-hash) to skip settled work.
   Must feed the AGENT (skip re-proposing), never the GATE (always re-runs the real
   test), and must invalidate on code change. Build only after the loop above is
-  reliable — memory added earlier hides the variable reliability is measuring.
+  reliable; memory added earlier hides the variable reliability is measuring.
 
 ## Architecture debt
 
 - Two parallel pipelines exist and are not yet reconciled: the review pipeline
   (`review.py`, `finding_verifier.py`) and the older proposal path
   (`state.py` Proposal/Snapshot, `transition_verifier.py`, wired into `loop.py`).
-  The fix stage is where they meet — a confirmed review finding becomes the goal for
+  The fix stage is where they meet: a confirmed review finding becomes the goal for
   a transition-verified fix. Unify the data models (ReviewFinding vs Proposal) and
   update the pytest tests (currently cover the old path only) as part of that work.
 
 ## Design invariants (do not break)
 
 1. **The verifier is deterministic and external.** No LLM in the accept/reject path.
-2. **Correctness comes from the code, checked fresh** — not from memory, not from a
+2. **Correctness comes from the code, checked fresh**, not from memory, not from a
    second model agreeing, not from a test the proposing agent also authored without
    the red-on-baseline / green-after / no-regression transition check.
 3. **A second model detects disagreement; it never votes correctness.** Disagreement
