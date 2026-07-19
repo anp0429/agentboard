@@ -56,6 +56,7 @@ def proposal_key(
     critic_model: str,
     harness_notes: str,
     run_critic: bool,
+    axis: str = "default",
 ) -> str:
     """sha256 over every input either prompt reads. Order fixed, versioned."""
     h = hashlib.sha256()
@@ -69,7 +70,10 @@ def proposal_key(
         critic_model,
         harness_notes,
         "critic" if run_critic else "no-critic",
-    ):
+    ) + ((f"axis={axis}",) if (axis or "default") != "default" else ()):
+        # axis biases which cases get proposed, so a non-default axis must key
+        # the cache separately. default appends NOTHING, so every pre-axis key
+        # (and the banked fingerprints tied to them) stays byte-identical.
         h.update(part.encode("utf-8"))
         h.update(b"\x00")
     return h.hexdigest()
@@ -124,6 +128,7 @@ def propose_or_cached(
         critic_model=getattr(critic, "model", "") if critic else "",
         harness_notes=getattr(reviewer, "harness_notes", "") or "",
         run_critic=critic is not None,
+        axis=getattr(reviewer, "axis", "default"),
     )
     if not fresh:
         cached = load(key)

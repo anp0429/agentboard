@@ -25,6 +25,32 @@ import os
 
 from ..review import ReviewFinding
 
+# Review axes bias WHICH cases the reviewer enumerates, injected as data so the
+# base prompt stays generic (same no-shape-hints, no-failure-bias rules apply).
+# An axis never names a specific payload — only categories of input — so a
+# finding is still the model's judgment, not the prompt read back. "default"
+# is the empty string: byte-identical to pre-axis behavior, so old caches and
+# fingerprints are unchanged.
+AXES: dict[str, str] = {
+    "default": "",
+    "security": (
+        "REVIEW EMPHASIS FOR THIS RUN: adversarial and untrusted input. When you "
+        "enumerate the domain (step 2), weight it toward inputs an attacker or a "
+        "hostile environment could supply: values that collide with reserved or "
+        "inherited names in the target language, inputs that try to cross a "
+        "boundary they should not (traversal, injection into a nested "
+        "structure), malformed or truncated data, oversized or deeply nested "
+        "input, and mixed or unexpected encodings. Still assert only what the "
+        "intent IMPLIES the correct handling is; do not assert a vulnerability "
+        "or aim at a failure. Reality answers."
+    ),
+}
+
+
+def resolve_axis(name: str) -> str:
+    """Axis directive text for a name; '' for default/unknown (never raises)."""
+    return AXES.get((name or "default").strip().lower(), "")
+
 _SYSTEM = """You are a staff engineer reviewing a code change against the intent it is meant to satisfy. You are not improving the code and not inventing features. You are checking whether it does what the intent says.
 
 INTENT:
@@ -144,6 +170,7 @@ class ReviewerAgent:
         client=None,
         max_chars: int = 12000,
         harness_notes: str = "",
+        axis: str = "default",
     ):
         self.repo_root = repo_root
         self.target_path = target_path
@@ -154,6 +181,8 @@ class ReviewerAgent:
         # Repo-specific test-writing rules (e.g. RepoProfile.harness_notes).
         # Injected into the prompt as data; the prompt stays repo-agnostic.
         self.harness_notes = harness_notes.strip()
+        self.axis = (axis or "default").strip().lower()
+        self._axis_directive = resolve_axis(self.axis)
         self._is_openai = model.startswith("gpt") or model.startswith("o")
 
     def _read(self, rel: str) -> str:
@@ -188,6 +217,7 @@ class ReviewerAgent:
             f"{change_block}"
             f"SOURCE FILE ({self.target_path}):\n```\n{source}\n```\n\n"
             f"EXISTING TESTS ({self.existing_tests_path}):\n```\n{tests}\n```"
+            + (f"\n\n{self._axis_directive}" if self._axis_directive else "")
         )
         notes = (
             "- " + self.harness_notes if self.harness_notes else

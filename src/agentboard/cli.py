@@ -383,7 +383,11 @@ def review(args) -> int:
         src = open(os.path.join(repo, tgt), encoding="utf-8").read()
         tst = open(os.path.join(repo, tst_path), encoding="utf-8").read()
         reviewer = ReviewerAgent(repo, tgt, tst_path, model=cfg.reviewer_model,
-                                 harness_notes=profile.harness_notes)
+                                 harness_notes=profile.harness_notes,
+                                 axis=args.axis)
+        if args.axis and args.axis != "default":
+            print(f"axis: {args.axis} (proposals biased toward "
+                  "adversarial/untrusted input; the gate is unchanged)")
         print(f"proposing for {tgt} (reviewer {cfg.reviewer_model}"
               + (f" + critic {cfg.critic_model}" if need_critic else "") + ")…")
         findings = propose_or_cached(
@@ -685,6 +689,11 @@ def main(argv: list[str] | None = None) -> int:
                    help="require --yes past this many scoped files (default 20)")
     r.add_argument("--yes", action="store_true",
                    help="confirm a scoped selection larger than --max-files")
+    r.add_argument("--axis", default="default",
+                   choices=["default", "security"],
+                   help="bias which cases the reviewer proposes; 'security' "
+                        "weights toward adversarial/untrusted input. The gate "
+                        "and its verdicts are unchanged.")
     r.add_argument("--board", default="./review_board.html", help="output board path")
     r.add_argument("--json-out", default="",
                    help="also write a machine-readable run artifact "
