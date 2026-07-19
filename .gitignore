@@ -9,3 +9,5 @@ agentboard_demo_board.html
 review_board.html
 paired_board_*.html
 zod_board_*.html
+dist/
+*.egg-info/
