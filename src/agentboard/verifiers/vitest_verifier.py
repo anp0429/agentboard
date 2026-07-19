@@ -60,6 +60,28 @@ def _apply(change: CodeChange, work: str) -> tuple[bool, str]:
     return True, ""
 
 
+# --- credential scrubbing ----------------------------------------------------
+
+# Model-provider credentials the gate must never hand to executed code. The
+# gate is deterministic by design — no LLM in the pass/fail path — so nothing
+# it spawns (install, build, smoke, or the tests themselves, which include
+# model-written code) has any legitimate use for these. Scrubbing here
+# enforces that design mechanically: even in CI, where the review step holds
+# OPENAI_API_KEY, the code under test runs without it. Deliberately narrow —
+# only the model providers' keys — because install steps may legitimately
+# need registry tokens.
+_PROVIDER_CREDENTIALS = ("OPENAI_API_KEY", "ANTHROPIC_API_KEY")
+
+
+def scrubbed_env(profile_env: dict[str, str]) -> dict[str, str]:
+    """The subprocess environment for everything the gate executes:
+    os.environ + the profile's env, minus model-provider credentials."""
+    env = {**os.environ, **profile_env}
+    for key in _PROVIDER_CREDENTIALS:
+        env.pop(key, None)
+    return env
+
+
 # --- the explicit, per-repo facts the verifier cannot guess -----------------
 
 @dataclass
@@ -186,7 +208,7 @@ class VitestVerifier:
     # ---- subprocess + parsing ----------------------------------------------
 
     def _run(self, args: list[str], cwd: str) -> subprocess.CompletedProcess:
-        env = {**os.environ, **self.profile.env}
+        env = scrubbed_env(self.profile.env)
         return subprocess.run(
             args, cwd=cwd, env=env, capture_output=True, text=True, timeout=self.timeout
         )

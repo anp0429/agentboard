@@ -35,7 +35,7 @@ import tempfile
 import time
 
 from ..review import ReviewFinding, ReviewRun
-from .vitest_verifier import RepoProfile, _tail
+from .vitest_verifier import RepoProfile, _tail, scrubbed_env
 
 
 def _inject(pristine: str, test_code: str) -> tuple[str | None, str]:
@@ -188,7 +188,9 @@ class FindingVerifier:
         return os.path.normpath(os.path.join(repo, self.project_dir))
 
     def _run(self, args, cwd):
-        env = {**os.environ, **self.profile.env}
+        # scrubbed_env: model-provider keys never reach executed code — the
+        # gate has no LLM in it, so nothing it spawns needs them.
+        env = scrubbed_env(self.profile.env)
         return subprocess.run(
             args, cwd=cwd, env=env, capture_output=True, text=True, timeout=self.timeout
         )
@@ -325,11 +327,21 @@ class FindingVerifier:
     @staticmethod
     def _classify_failure(fm: str) -> tuple[str, str]:
         """One failed assertionResult -> (kind, first_line). The single
-        shared brain for serial and batched paths — they must never diverge."""
+        shared brain for serial and batched paths — they must never diverge.
+
+        Only a named AssertionError counts as an assertion failure. The old
+        heuristic also accepted any message containing "expected" — and
+        "Unexpected token", a parse error, contains that substring, so a
+        garbage test could mint a confirmed_gap. A runtime crash that is
+        really the tool's fault still surfaces (as broken_test, where a human
+        reads it); the gate stays conservative because an inflated gap is the
+        one error class this design must never produce. vitest's assertion
+        layer (@vitest/expect, chai, node:assert) names AssertionError in
+        every genuine expect/assert failure."""
         first = fm.strip().splitlines()[0][:200] if fm.strip() else ""
         if "timed out" in fm.lower():
             return "timeout", first
-        if "AssertionError" in fm or "expected" in fm.lower():
+        if "AssertionError" in fm:
             return "assertion", first
         return "load_error", first
 
