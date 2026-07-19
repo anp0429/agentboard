@@ -48,11 +48,12 @@ break the core thesis.
 
 ## Next
 
-- [ ] **Dataset collector (Phase B).** Every `--json-out` row is already a labeled
-  training example: prompt inputs, proposed test, executed verdict, audit note. Append
-  one JSONL row per finding to a growing corpus on every run — benchmark and real use
-  alike. Changes no verdict logic. This is the substrate for the model work below, and
-  every run before it exists is data lost, so it lands first.
+- [x] **Dataset collector (Phase B).** `--dataset` appends one JSONL row per finding:
+  the proposal, the executed verdict, the advisory audit. The label is `ran` (did the
+  test execute), a model-free fact the audit never overwrites. Backfills from existing
+  `--json-out` artifacts, so the benchmark seeded ~260 rows on day one. Changes no
+  verdict logic. See `dataset.py` and `bench/report.py`. This is the substrate for the
+  model work below.
 - [ ] **Verified fix stage.** For a confirmed gap, propose a fix and prove it the same
   way the gap was proven: `TransitionVerifier` shows red -> green -> no regression, no
   model in the fix's verdict. Pieces exist (`fix_with_test_agent`, `TransitionVerifier`,
