@@ -173,6 +173,22 @@ and serial paths are asserted verdict-identical by fingerprint. With
 Both findings were produced by executing tests and both are reproducible by
 hand.
 
+## Benchmark
+
+[BENCHMARK.md](BENCHMARK.md) measures the harder question: can agentboard
+find a real bug in code it has never seen, from an intent that does not name
+the bug? It runs at the parent commit of recent merged bugfix PRs, with a
+neutral intent, and scores against the fix.
+
+On 12 bugs across 8 repositories, 8 rows produced a real confirmed bug and 4
+were exact strict catches. One row, pointed at vueuse before a known fix,
+caught the fix's neighborhood and two additional bugs the PR never touched.
+Four rows missed and are documented in full. The benchmark also records the
+tool's most useful failure: the advisory auditor twice called a real strict
+catch a false positive, once citing the buggy line as if it were the
+contract — which is exactly why the verdict comes from execution and never
+from a model.
+
 ## Reliability
 
 The classification path is checked for byte-identical verdicts across 1,000
@@ -199,9 +215,17 @@ verdict-identical by fingerprint.
   era) tend to fail at environment preparation for toolchain reasons that
   predate agentboard; the run reports this as an environment failure rather
   than producing verdicts.
-- pnpm repos are driven through a pinned modern pnpm (`npx pnpm@9`),
-  deliberately ignoring the repo's `packageManager` field: corepack would
-  otherwise re-pin to an old pnpm that cannot run on current Node.
+- pnpm repos run under the version the repo's own config parses: the
+  `packageManager` pin is honored when modern (>= 9), and falls back to a
+  pinned `pnpm@9` for ancient or absent pins that cannot run on current Node.
+  A single hardcoded pin broke in both directions (old pnpm dies on Node 22;
+  pnpm 9 rejects a pnpm 10/11 `pnpm-workspace.yaml` config), so the rule is
+  "run under the version this config was written for."
+- Monorepos with multiple vitest projects or per-package configs need a
+  one-line `.agentboard.toml` naming the `project` or `filter`, the same way
+  you would scope CI. Unscoped, the runner may boot an unrelated (e.g.
+  browser) project and report an environment failure rather than a verdict.
+
 ## Design invariants
 
 1. The verifier is deterministic and external. No LLM sits in the accept or

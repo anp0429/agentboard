@@ -36,20 +36,60 @@ break the core thesis.
   *collections/counts* (fabrication/over-production) and looser on *rendered field
   values*.
 
+## Benchmark (done)
+
+- [x] **Cross-repo benchmark with published misses.** 12 bugs, 8 repos, neutral
+  intents, parent-commit checkouts, scored against the real fix. 8 rows caught a
+  real bug, 4 exact strict catches, 0 environment failures. See `BENCHMARK.md`.
+  This replaces the single-repo reliability count as the headline evidence.
+- [x] **Different-domain proof.** The benchmark spans URL utils, object merge, path
+  handling, a reactive store, an HTTP client, devtools sorting, and schema parsing.
+  The generic claim is earned: no row is database-shaped.
+
 ## Next
 
-- [ ] **Finish reliability measurement.** Freeze the config, run N times with memory
-  off, count how often the target bug is caught. This is the number that gates
-  everything below.
-- [ ] **Different-domain test.** Run the same pipeline on a non-DB PR. The general
-  invariants (completeness, soundness, uniqueness, count, ordering, idempotence —
-  see `ingestion/output_invariants.py`) should surface a real bug there too. If it
-  only works on DB PRs, the "generic" claim is not yet earned.
-- [ ] **Wire the assertion lint.** `verifiers/assertion_lint.py` exists and is tested
-  but is not yet in the loop. Run it on each proposed test; flag or regenerate tests
-  that use presence-only matchers on a collection (blind to over-production).
-- [ ] **Tighten the gap auditor** so it commits (likely_real / likely_false_positive)
-  with evidence instead of defaulting to uncertain.
+- [ ] **Dataset collector (Phase B).** Every `--json-out` row is already a labeled
+  training example: prompt inputs, proposed test, executed verdict, audit note. Append
+  one JSONL row per finding to a growing corpus on every run — benchmark and real use
+  alike. Changes no verdict logic. This is the substrate for the model work below, and
+  every run before it exists is data lost, so it lands first.
+- [ ] **Verified fix stage.** For a confirmed gap, propose a fix and prove it the same
+  way the gap was proven: `TransitionVerifier` shows red -> green -> no regression, no
+  model in the fix's verdict. Pieces exist (`fix_with_test_agent`, `TransitionVerifier`,
+  the `fix_status` fields, the board rendering); this is wiring plus an opt-in `--fix`
+  flag, author-side first, collapsed or off in PR comments on repos you do not own. A
+  bad candidate fix must render as rejected, never as a diff to apply.
+- [ ] **Assertion quality.** The benchmark's core finding: same bug class, one proposal
+  asserts the right remedy (catch) and one the wrong remedy (miss + false positive).
+  Wire the assertion lint (`verifiers/assertion_lint.py`, built and tested, not yet in
+  the loop) and feed assertion-shape guidance back to the proposer.
+- [ ] **Auditor calibration, round two.** The false-positive-must-cite-source rule
+  helped, but the auditor still inverted on two strict catches by citing the *buggy*
+  line as the contract (see `BENCHMARK.md`). It reasons from "what the code does," which
+  is the bug when the code is buggy. Next: reason from the intent's implied contract,
+  not the current behavior. It stays advisory regardless.
+
+## Model work (the reward-function thesis)
+
+The gate is a reward function with no model in it. Every review emits an
+execution-grounded label for free. That is reinforcement learning from verifiable
+rewards, applied to code review. The ladder, cheapest rung first:
+
+- [ ] **Phase A: local-model swap.** The reviewer model is already a config value and
+  the client honors `OPENAI_BASE_URL`, so an open coding model behind an OpenAI-compatible
+  server plugs in with no code change. Run the best open model against this same benchmark
+  and publish "frontier vs open, before the gate and after the gate." If the after-gate gap
+  is small, that is the headline: the gate makes weak models trustworthy.
+- [ ] **Phase C: train the proposer on gate outcomes.** Rejection-sample or LoRA-tune the
+  open proposer to maximize proposals that run and reveal, penalizing broken tests and
+  audited false positives. Measure on held-out benchmark rows never trained on. Starts only
+  when the benchmark is frozen as the eval set and the dataset crosses ~2,000 rows. Skill in
+  weights (how to propose an executable falsifying test), not repo facts.
+- [ ] **Phase D: company-adapted review.** Local model inside the firewall, learning from
+  two signals a company already produces: the gate's verdicts, and its senior engineers'
+  review comments as persona-tagged taste. The world's models learn on everyone's data; this
+  one learns on yours, and nothing leaves the building. Human comments train the proposer's
+  taste, never the verdict. The gate stays model-free forever. Pilots only where authorized.
 
 ## Larger, not yet built (the full loop)
 
