@@ -25,6 +25,7 @@ import time
 from .agents.critic_agent import CriticAgent
 from .agents.reviewer_agent import ReviewerAgent
 from .config import (
+    detect_project_dir,
     build_profile,
     current_branch,
     fork_point,
@@ -357,7 +358,11 @@ def review(args) -> int:
               "silently reviewing the whole file")
         return 1
 
-    profile = build_profile(repo, cfg, tests)
+    project_dir = detect_project_dir(repo, target)
+    if project_dir != ".":
+        print(f"project root: {project_dir} (nearest lockfile/package.json "
+              "above the target)")
+    profile = build_profile(repo, cfg, tests, project_dir=project_dir)
     critic = CriticAgent(model=cfg.critic_model) if need_critic else None
 
     # the set of (target, tests) pairs to review. Default: the one --target.
@@ -402,7 +407,8 @@ def review(args) -> int:
             return 1
         sub = ReviewRun(intent=intent, target=tgt, findings=findings)
         FindingVerifier(repo, profile, tests_file=tst_path,
-                        timeout=args.timeout).run(sub)
+                        timeout=args.timeout,
+                        project_dir=project_dir).run(sub)
         run.findings.extend(sub.findings)
         # env_error lives on the per-file sub-run; merging only findings threw
         # it away, so the banner never rendered anywhere and "see banner"
