@@ -44,6 +44,13 @@ from .verifiers.vitest_verifier import RepoProfile
 _BUG = "Math.min(n, hi - 1)"
 _FIX = "Math.min(n, hi)"
 
+# default corpus path for --dataset (bare). Honors AGENTBOARD_DATASET.
+import os as _os
+_DATASET_DEFAULT = _os.environ.get(
+    "AGENTBOARD_DATASET",
+    _os.path.join(_os.path.expanduser("~"), ".agentboard", "dataset.jsonl"),
+)
+
 _BADGE = {
     "handled": "\x1b[32mhandled      \x1b[0m",
     "confirmed_gap": "\x1b[31mCONFIRMED GAP\x1b[0m",
@@ -466,6 +473,16 @@ def review(args) -> int:
         _write_json_out(args.json_out, run, repo=repo, base=base, head=head,
                         pairs=pairs, board=board)
         print(f"json: {args.json_out}")
+
+    # Dataset collection: every finding is a labeled training row (proposal +
+    # executed verdict). Opt-in, append-only, changes no verdict. See dataset.py.
+    if getattr(args, "dataset", None):
+        from .dataset import append_run
+        append_run(
+            run, path=args.dataset, repo=repo, base=base, head=head,
+            pairs=pairs, intent=intent, axis=args.axis,
+            reviewer_model=cfg.reviewer_model, critic_model=cfg.critic_model,
+        )
     return 0
 
 
@@ -733,6 +750,11 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--json-out", default="",
                    help="also write a machine-readable run artifact "
                         "(schema_version 1) to this path")
+    r.add_argument("--dataset", nargs="?", const=_DATASET_DEFAULT, default=None,
+                   metavar="PATH",
+                   help="append one JSONL training row per finding (proposal + "
+                        "executed verdict) to a growing corpus. Bare flag uses "
+                        f"{_DATASET_DEFAULT}; pass a path to override.")
 
     args = parser.parse_args(argv)
     if args.command == "demo":
