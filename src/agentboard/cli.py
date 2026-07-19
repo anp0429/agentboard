@@ -14,6 +14,7 @@ Requires node + npm on PATH (the demo target is a real vitest project).
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shutil
 import subprocess
@@ -395,7 +396,50 @@ def review(args) -> int:
     print(f"\n{verdict_summary(run)}")
     print(f"{len(run.gaps)} confirmed gap(s) across {len(pairs)} file(s). "
           f"Board: {board}")
+
+    if getattr(args, "json_out", ""):
+        _write_json_out(args.json_out, run, repo=repo, base=base, head=head,
+                        pairs=pairs, board=board)
+        print(f"json: {args.json_out}")
     return 0
+
+
+def _write_json_out(path, run, *, repo, base, head, pairs, board) -> None:
+    """Machine-readable run artifact (schema_version 1). This is the adapter
+    boundary: CI/MCP surfaces consume this file; the engine knows nothing
+    about PR comments. Evidence is the product, so each finding carries its
+    test source and observed output, not just a status. Exit codes stay
+    advisory (0 = ran, 1 = could not run); gaps live here, never in the
+    exit code, per the never-blocking position."""
+    counts: dict[str, int] = {}
+    for f in run.findings:
+        counts[f.status] = counts.get(f.status, 0) + 1
+    doc = {
+        "schema_version": 1,
+        "repo": repo,
+        "base": base,
+        "head": head,
+        "intent": run.intent,
+        "targets": [{"target": t, "tests": ts} for t, ts in pairs],
+        "env_error": run.env_error,
+        "verdict_counts": counts,
+        "confirmed_gaps": len(run.gaps),
+        "summary": verdict_summary(run),
+        "board": board,
+        "findings": [
+            {
+                "behavior": f.behavior,
+                "status": f.status,
+                "observed": f.observed,
+                "source_file": f.source_file,
+                "test_code": f.test_code,
+            }
+            for f in run.findings
+        ],
+    }
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(doc, fh, indent=2)
+        fh.write("\n")
 
 
 def _resolve_targets(repo, target, tests, args):
@@ -602,6 +646,9 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--yes", action="store_true",
                    help="confirm a scoped selection larger than --max-files")
     r.add_argument("--board", default="./review_board.html", help="output board path")
+    r.add_argument("--json-out", default="",
+                   help="also write a machine-readable run artifact "
+                        "(schema_version 1) to this path")
 
     args = parser.parse_args(argv)
     if args.command == "demo":
