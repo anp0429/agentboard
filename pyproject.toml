@@ -43,6 +43,10 @@ dev = ["pytest", "ruff", "build"]
 # needs langgraph. The core `agentboard review` gate does not, so it is an
 # opt-in extra rather than a heavyweight default install.
 whiteboard = ["langgraph>=1.0"]
+# The MCP server (agentboard-mcp) — agentboard as a tool a coding agent
+# calls over stdio. Optional for the same reason as whiteboard: the core
+# CLI gate needs none of it.
+mcp = ["mcp>=1.2"]
 
 [project.urls]
 Homepage = "https://github.com/anp0429/agentboard"
@@ -51,6 +55,7 @@ Issues = "https://github.com/anp0429/agentboard/issues"
 
 [project.scripts]
 agentboard = "agentboard.cli:main"
+agentboard-mcp = "agentboard.mcp_server:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/agentboard"]

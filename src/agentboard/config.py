@@ -241,9 +241,14 @@ def preflight(
     reviewer_model: str,
     need_critic: bool,
     critic_model: str,
+    worktree: bool = False,
 ) -> list[str]:
     """Every check that can fail cheaply, run before any token is spent.
-    Returns a list of human-readable problems; empty means go."""
+    Returns a list of human-readable problems; empty means go.
+
+    `worktree=True` is the agent-session mode: the review's subject IS the
+    dirty working tree (diffed and executed as the same on-disk facts), so
+    the dirty-tree check inverts from a blocker to the point of the run."""
     problems: list[str] = []
 
     if not os.path.isdir(os.path.join(repo_root, ".git")):
@@ -265,15 +270,17 @@ def preflight(
     # .agentboard.toml, local scratch) doesn't change what HEAD reviews and
     # must not block the run — this exact false-positive stopped the first
     # real review until the config was committed.
-    tracked_dirty = subprocess.run(
-        ["git", "-C", repo_root, "status", "--porcelain", "--untracked-files=no"],
-        capture_output=True, text=True,
-    ).stdout.strip()
-    if tracked_dirty:
-        problems.append(
-            "tracked files have uncommitted changes — the review sees committed "
-            "code only; commit or stash so head reflects what you mean."
-        )
+    if not worktree:
+        tracked_dirty = subprocess.run(
+            ["git", "-C", repo_root, "status", "--porcelain", "--untracked-files=no"],
+            capture_output=True, text=True,
+        ).stdout.strip()
+        if tracked_dirty:
+            problems.append(
+                "tracked files have uncommitted changes — the review sees "
+                "committed code only; commit or stash so head reflects what "
+                "you mean, or pass --worktree to review the dirty tree itself."
+            )
 
     for label, rel in (("target", target), ("tests", tests)):
         if rel and not os.path.isfile(os.path.join(repo_root, rel)):

@@ -78,6 +78,13 @@ nested inside a larger repository works, and workspace repos still install
 at their top level. A preflight validates refs,
 files, and keys before any tokens are spent.
 
+To review uncommitted edits instead of committed refs, pass `--worktree`:
+the diff becomes working tree vs `--base` (default `HEAD`), the sandbox
+executes the same on-disk state it diffed, and `--intent` is required since
+uncommitted work has no commit message to derive intent from. This is the
+mode a coding agent uses mid-session; it is also the default for the MCP
+server below.
+
 ## Multi-file reviews
 
 Add files explicitly:
@@ -142,6 +149,41 @@ the run completed (gaps live in the JSON, never in the exit code), 1 means
 it could not run. This artifact is the boundary every integration consumes;
 the engine itself knows nothing about pull requests.
 
+## Using from a coding agent (MCP)
+
+The gate runs as an MCP server, so a coding agent can gate its own edits
+before committing them:
+
+```
+pip install "reviewgate[mcp]"
+```
+
+For Claude Code:
+
+```
+claude mcp add agentboard -- agentboard-mcp
+```
+
+For any other MCP client (Cursor, etc.), the server config is:
+
+```json
+{ "agentboard": { "command": "agentboard-mcp" } }
+```
+
+This exposes one tool, `review`, which returns the same schema_version-1
+artifact as `--json-out`. It defaults to `--worktree` mode: the diff is the
+working tree's uncommitted edits and the sandbox executes that same on-disk
+state, which is the question an agent mid-session is actually asking.
+`intent` is required — the calling agent states what its change is meant to
+do; nothing is derived from commit messages.
+
+The server is the same thin adapter as the GitHub Action: it builds the
+CLI's own arguments and runs the same `review()` path, and a parity test
+fails if the two ever accept different flags. Verdicts stay advisory here
+too — the tool returns findings with their test source and observed output;
+it never raises on a confirmed gap, because deciding what a gap means is
+the calling agent's (and ultimately a human's) job.
+
 ## How it works
 
 1. Propose. An LLM reads the intent and the diff and proposes behaviors, each
@@ -181,11 +223,13 @@ and serial paths are asserted verdict-identical by fingerprint. With
   involving a `__proto__` path element, where bracket assignment sets the
   prototype instead of an own key. The residual was verified in plain
   JavaScript, and a remedy was verified red to green with no regressions.
-- [unjs/ufo#360](https://github.com/unjs/ufo/pull/360): proposed tests caught `withBase`/
-  `withoutBase` treating `/` and `?` as base boundaries but not `#`, so a fragment directly after the base path broke both operations. Reported upstream with a fix and regression tests.
+- [unjs/ufo#360](https://github.com/unjs/ufo/pull/360): proposed tests caught
+  `withBase`/`withoutBase` treating `/` and `?` as base boundaries but not
+  `#`, so a fragment directly after the base path broke both operations.
+  Reported upstream with a fix and regression tests.
 
-Both findings were produced by executing tests and both are reproducible by
-hand.
+Every finding above was produced by executing tests, and every one is
+reproducible by hand.
 
 ## Benchmark
 

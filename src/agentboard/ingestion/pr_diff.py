@@ -59,6 +59,29 @@ def load_pr_diff(repo: str, head: str, base: str = "main") -> PRDiff:
     return PRDiff(base=merge_base, head=head, files=files)
 
 
+def load_worktree_diff(repo: str, base: str = "HEAD") -> PRDiff:
+    """Diff the WORKING TREE (staged + unstaged edits) against a ref.
+
+    This is the agent-session mode: an agent has edited files on disk and wants
+    them gated before committing. The gate's sandbox copies the working tree,
+    so this diff and the executed code are the same facts — unlike
+    `load_pr_diff`, which describes refs and would silently disagree with what
+    the sandbox runs when the tree is dirty.
+
+    Untracked files do not appear in `git diff` and are therefore invisible
+    here (they still execute in the sandbox). Reviewing a brand-new file means
+    `git add`-ing it first, which is also what makes it part of the change.
+    """
+    base_sha = _git(repo, "rev-parse", base).strip()
+    name_only = _git(repo, "diff", "--name-only", base_sha)
+    files: list[ChangedFile] = []
+    for path in (p for p in name_only.splitlines() if p.strip()):
+        patch = _git(repo, "diff", base_sha, "--", path)
+        added, removed, hunks = _split_patch(patch)
+        files.append(ChangedFile(path=path, added=added, removed=removed, hunks=hunks))
+    return PRDiff(base=base_sha, head="WORKTREE", files=files)
+
+
 def _split_patch(patch: str) -> tuple[str, str, list[str]]:
     added, removed, hunks, cur = [], [], [], []
     for line in patch.splitlines():

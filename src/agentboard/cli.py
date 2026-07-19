@@ -330,10 +330,11 @@ def review(args) -> int:
             return 1
 
     need_critic = cfg.run_critic and not args.no_critic
+    worktree = bool(getattr(args, "worktree", False))
     problems = preflight(
         repo_root=repo, head=head, base=base, target=target, tests=tests,
         reviewer_model=cfg.reviewer_model, need_critic=need_critic,
-        critic_model=cfg.critic_model,
+        critic_model=cfg.critic_model, worktree=worktree,
     )
     if problems:
         print("agentboard review — cannot start:")
@@ -347,6 +348,13 @@ def review(args) -> int:
         intent = args.intent
     elif args.issue:
         intent = resolve_intent(issue_url=args.issue)
+    elif worktree:
+        # Uncommitted work has no commit message; deriving intent from the
+        # branch's history would describe the PREVIOUS change, not this one.
+        print("agentboard review — cannot start:")
+        print("  - --worktree needs --intent (or --issue): uncommitted edits "
+              "have no commit message to derive intent from.")
+        return 1
     else:
         intent = intent_from_commits(repo, base, head)
         if not intent:
@@ -356,14 +364,28 @@ def review(args) -> int:
             return 1
         print(f"intent: derived from commit message(s) on {head}")
 
-    from .ingestion.pr_diff import diff_blob, load_pr_diff
+    from .ingestion.pr_diff import diff_blob, load_pr_diff, load_worktree_diff
     change = ""
     try:
-        change = diff_blob(load_pr_diff(repo, head=head, base=base))
-        print(f"change: {len(change)} chars ({head} vs {base})")
+        if worktree:
+            # Agent-session mode: the diff and the sandbox both describe the
+            # on-disk working tree, so they cannot disagree. Diff against the
+            # given base, or HEAD when none was given (just the uncommitted
+            # edits — the usual "gate what I changed this session" question).
+            wt_base = args.base or "HEAD"
+            change = diff_blob(load_worktree_diff(repo, base=wt_base))
+            print(f"change: {len(change)} chars (working tree vs {wt_base})")
+        else:
+            change = diff_blob(load_pr_diff(repo, head=head, base=base))
+            print(f"change: {len(change)} chars ({head} vs {base})")
     except Exception as e:  # noqa: BLE001
         print(f"  - could not load the diff ({e}); aborting rather than "
               "silently reviewing the whole file")
+        return 1
+    if worktree and not change.strip():
+        print("agentboard review — cannot start:")
+        print(f"  - --worktree: no changes between the working tree and "
+              f"{args.base or 'HEAD'}. Nothing to review.")
         return 1
 
     project_dir = detect_project_dir(repo, target)
@@ -746,6 +768,12 @@ def main(argv: list[str] | None = None) -> int:
                    help="bias which cases the reviewer proposes; 'security' "
                         "weights toward adversarial/untrusted input. The gate "
                         "and its verdicts are unchanged.")
+    r.add_argument("--worktree", action="store_true",
+                   help="review the WORKING TREE (uncommitted edits included) "
+                        "instead of committed refs. The diff is working tree "
+                        "vs --base (default HEAD), and the gate executes the "
+                        "same on-disk state it diffed. This is the mode a "
+                        "coding agent uses mid-session, before committing.")
     r.add_argument("--board", default="./review_board.html", help="output board path")
     r.add_argument("--json-out", default="",
                    help="also write a machine-readable run artifact "
