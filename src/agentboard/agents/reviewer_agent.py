@@ -183,7 +183,8 @@ class ReviewerAgent:
         self.harness_notes = harness_notes.strip()
         self.axis = (axis or "default").strip().lower()
         self._axis_directive = resolve_axis(self.axis)
-        self._is_openai = model.startswith("gpt") or model.startswith("o")
+        from ..providers import uses_anthropic
+        self._is_openai = not uses_anthropic(model)
 
     def _read(self, rel: str) -> str:
         try:
@@ -194,14 +195,9 @@ class ReviewerAgent:
 
     def _client_lazy(self):
         if self._client is None:
-            if self._is_openai:
-                from openai import OpenAI
+            from ..providers import client_for
 
-                self._client = OpenAI()
-            else:
-                from anthropic import Anthropic
-
-                self._client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+            self._client = client_for(self.model)
         return self._client
 
     def review(self, intent: str, change: str = "") -> list[ReviewFinding]:
@@ -234,7 +230,9 @@ class ReviewerAgent:
                         {"role": "user", "content": user},
                     ],
                 )
-                data = json.loads(resp.choices[0].message.content or "{}")
+                # lenient, not strict: local models behind the same client
+                # sometimes fence their JSON despite response_format.
+                data = _loads_lenient(resp.choices[0].message.content or "{}")
             else:
                 resp = client.messages.create(
                     model=self.model,

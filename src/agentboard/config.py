@@ -286,15 +286,28 @@ def preflight(
         if rel and not os.path.isfile(os.path.join(repo_root, rel)):
             problems.append(f"{label} file not found in repo: {rel}")
 
-    def _model_needs(m: str) -> str:
-        return "OPENAI_API_KEY" if (m.startswith("gpt") or m.startswith("o")) else "ANTHROPIC_API_KEY"
+    def _model_needs(m: str) -> str | None:
+        """Env key a model requires, or None. Routing rule lives in
+        providers.uses_anthropic; this mirrors it. A non-claude model with
+        OPENAI_BASE_URL set is a local/compatible endpoint: no key needed."""
+        from .providers import uses_anthropic
+        if uses_anthropic(m):
+            return "ANTHROPIC_API_KEY"
+        if os.environ.get("OPENAI_BASE_URL", "").strip():
+            return None
+        return "OPENAI_API_KEY"
 
-    keys = {_model_needs(reviewer_model)}
+    keys = {k for k in (_model_needs(reviewer_model),) if k}
     if need_critic:
-        keys.add(_model_needs(critic_model))
+        k = _model_needs(critic_model)
+        if k:
+            keys.add(k)
     for k in sorted(keys):
         if not os.environ.get(k):
-            problems.append(f"missing {k} (needed by the model you selected)")
+            problems.append(
+                f"missing {k} (needed by the model you selected; for a "
+                "local OpenAI-compatible server, set OPENAI_BASE_URL instead)"
+            )
 
     for tool in ("node", "npm", "git"):
         if shutil.which(tool) is None:

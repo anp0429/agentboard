@@ -209,6 +209,39 @@ serial fallback per behavior where batching cannot isolate a result. Batched
 and serial paths are asserted verdict-identical by fingerprint. With
 `--scope`, the cost curve prints before any spend.
 
+## Local and open-weight models
+
+Model routing is one rule: a model named `claude*` uses Anthropic; every
+other name uses an OpenAI-compatible client. Setting `OPENAI_BASE_URL`
+points that client anywhere, so the same install runs against a local
+server or a hosted open-weight provider with no code change:
+
+```
+# Ollama (free, offline; no key needed)
+export OPENAI_BASE_URL=http://localhost:11434/v1
+
+# or a hosted provider (OpenRouter shown; needs its key)
+export OPENAI_BASE_URL=https://openrouter.ai/api/v1
+export OPENAI_API_KEY=sk-or-...
+```
+
+```toml
+# .agentboard.toml
+reviewer_model = "qwen3.6:27b"            # or "moonshotai/kimi-k2.6", etc.
+critic_model = "devstral-small-2"         # a different lineage decorrelates
+```
+
+The design absorbs weaker proposers safely: a proposal that does not
+compile or run is scored against the test (`broken_test`), never against
+the code, so a smaller model can only cost recall, not trust. The verdict
+path is unchanged because it never contained a model.
+
+Two notes. With `OPENAI_BASE_URL` set, preflight cannot know whether the
+endpoint requires auth (Ollama ignores keys; hosted providers need one), so
+a missing provider key surfaces as a `[warn]` at propose time rather than a
+preflight stop. And the advisory auditor is a `claude*` model by default;
+point `--audit-model` at any open model, or `--no-audit` to skip it.
+
 ## Results from real repositories
 
 - [supabase/mcp#317](https://github.com/supabase/mcp/pull/317): proposed

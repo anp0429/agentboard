@@ -76,16 +76,13 @@ class GapAuditor:
         self.model = model
         self._client = client
         self.max_source_chars = max_source_chars
-        self._is_openai = model.startswith("gpt") or model.startswith("o")
+        from ..providers import uses_anthropic
+        self._is_openai = not uses_anthropic(model)
 
     def _client_lazy(self):
         if self._client is None:
-            if self._is_openai:
-                from openai import OpenAI
-                self._client = OpenAI()
-            else:
-                from anthropic import Anthropic
-                self._client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+            from ..providers import client_for
+            self._client = client_for(self.model)
         return self._client
 
     def _ask(self, source: str, finding: ReviewFinding) -> dict:

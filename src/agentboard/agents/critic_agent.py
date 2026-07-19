@@ -121,18 +121,14 @@ class CriticAgent:
         self.model = model
         self._client = client
         self.max_tokens = max_tokens
-        self._is_openai = model.startswith("gpt") or model.startswith("o")
+        from ..providers import uses_anthropic
+        self._is_openai = not uses_anthropic(model)
 
     def _client_lazy(self):
         if self._client is None:
-            if self._is_openai:
-                from openai import OpenAI
+            from ..providers import client_for
 
-                self._client = OpenAI()
-            else:
-                from anthropic import Anthropic
-
-                self._client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+            self._client = client_for(self.model)
         return self._client
 
     def critique(
@@ -155,7 +151,7 @@ class CriticAgent:
                         {"role": "user", "content": user},
                     ],
                 )
-                data = json.loads(resp.choices[0].message.content or "{}")
+                data = _loads_gaps_lenient(resp.choices[0].message.content or "{}")
             else:
                 resp = client.messages.create(
                     model=self.model,

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "reviewgate"
-version = "0.2.1"
+version = "0.2.2"
 description = "A code review gate that verifies changes by executing tests, not by judging diffs. An LLM proposes edge-case tests; a deterministic harness runs each one; a behavior is a gap only if its test runs and fails."
 readme = "README.md"
 requires-python = ">=3.11"
