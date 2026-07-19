@@ -29,7 +29,7 @@ comes with a test you can run yourself and watch fail.
 Install (Python 3.11+):
 
 ```
-pip install agentboard
+pip install reviewgate
 ```
 
 Or from source for development: `pip install -e ".[dev]"`.
