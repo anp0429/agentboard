@@ -181,6 +181,8 @@ and serial paths are asserted verdict-identical by fingerprint. With
   involving a `__proto__` path element, where bracket assignment sets the
   prototype instead of an own key. The residual was verified in plain
   JavaScript, and a remedy was verified red to green with no regressions.
+- [unjs/ufo#360](https://github.com/unjs/ufo/pull/360): proposed tests caught `withBase`/
+  `withoutBase` treating `/` and `?` as base boundaries but not `#`, so a fragment directly after the base path broke both operations. Reported upstream with a fix and regression tests.
 
 Both findings were produced by executing tests and both are reproducible by
 hand.
