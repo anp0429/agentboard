@@ -45,21 +45,33 @@ def _inject(pristine: str, test_code: str) -> tuple[str | None, str]:
     base can inject a DIFFERENT test per finding, each starting from a clean file
     — never stacking one finding's test on top of another's.
 
-    Placement is load-bearing (learned against zod): if the file wraps its
-    tests in a describe block, insert before its final `});` so the new test
-    inherits describe-scoped helpers. But if the file is TOP-LEVEL test()
-    calls, that same `});` closes the LAST TEST — inserting there nests the
-    proposal inside another test's body, where `-t` skipping means it never
-    registers at runtime while a typecheck project still "passes" it
-    statically. For describe-less files, append at end of file: module
-    imports are inherited there regardless.
+    Placement is load-bearing, and it is decided by the LAST top-level opener
+    (column-0 describe/test/it), not by whether a describe exists anywhere:
+
+    * Last opener is describe -> the file ENDS in a describe block; insert
+      before its final column-0 close so the proposal inherits
+      describe-scoped helpers (learned against zod, whose tests file is one
+      wrapping describe).
+    * Last opener is test/it -> the file ends in top-level tests; the final
+      `})` closes the LAST TEST, and inserting there nests the proposal
+      inside another test's body, where `-t` skipping means it never
+      registers at runtime ("name match failed") while a typecheck project
+      still "passes" it statically. Append at end of file instead: module
+      scope is always legal and module imports/helpers are in scope.
+
+    The second case includes MIXED files — describes early, top-level its at
+    the end (jotai's store.test.tsx, found on benchmark row 6, where the old
+    "any describe anywhere" routing nested all 10 proposals inside the final
+    it). EOF-append was proven against jotai's real environment before this
+    rule was written.
     """
     if not test_code:
         return None, "no test supplied"
     code = _strip_imports(test_code).rstrip()
     if not code:
         return None, "test contained only imports"
-    if "\ndescribe(" in pristine or pristine.startswith("describe("):
+    openers = re.findall(r"^(describe|test|it)\b", pristine, flags=re.M)
+    if openers and openers[-1] == "describe":
         tail = pristine.rstrip()
         # Column-0 close, with or without a semicolon: prettier semi:false
         # repos (zustand was the one that surfaced this) end the block with

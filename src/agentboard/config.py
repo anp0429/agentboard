@@ -11,7 +11,9 @@ with a fix hint instead of five minutes into a token-spending pipeline.
 
 from __future__ import annotations
 
+import json
 import os
+import re
 import shutil
 import subprocess
 import tomllib
@@ -139,6 +141,27 @@ def detect_project_dir(repo_root: str, target: str) -> str:
     return "."
 
 
+def detect_pnpm_version(scan_root: str) -> str:
+    """The pnpm version the repo's config is guaranteed to parse under.
+
+    Reads package.json's packageManager pin. A modern pin (>= 9) is honored
+    exactly (any +sha512 integrity suffix stripped — npx wants a plain
+    version). An old pin (pnpm 7/8 cannot run on Node 22: ERR_INVALID_THIS)
+    or no pin falls back to 9. Found on pathe: pnpm 10/11 repos use
+    pnpm-workspace.yaml as a plain config file with no `packages` field,
+    which pnpm 9 rejects — so pinning 9 for everyone breaks modern repos the
+    same way ambient pnpm 7 broke Node 22."""
+    try:
+        with open(os.path.join(scan_root, "package.json"), encoding="utf-8") as fh:
+            pin = str(json.load(fh).get("packageManager", ""))
+    except (OSError, ValueError):
+        return "9"
+    m = re.match(r"pnpm@(\d+)(?:\.(\d+))?(?:\.(\d+))?", pin)
+    if not m or int(m.group(1)) < 9:
+        return "9"
+    return ".".join(p for p in m.groups() if p is not None)
+
+
 def build_profile(repo_root: str, cfg: Config, tests_file: str,
                   project_dir: str = ".") -> RepoProfile:
     scan_root = os.path.normpath(os.path.join(repo_root, project_dir))
@@ -159,6 +182,7 @@ def build_profile(repo_root: str, cfg: Config, tests_file: str,
         prof = RepoProfile.pnpm_vitest(
             os.path.basename(repo_root.rstrip("/")),
             filter=cfg.filter, project=project, build=cfg.build,
+            pnpm_version=detect_pnpm_version(scan_root),
         )
     if cfg.harness_notes:
         prof.harness_notes = cfg.harness_notes.strip()

@@ -122,13 +122,19 @@ class RepoProfile:
         build: bool = True,
         extra_test_args: list[str] | None = None,
         env: dict[str, str] | None = None,
+        pnpm_version: str = "9",
     ) -> "RepoProfile":
-        # Every pnpm invocation goes through a pinned modern pnpm via npx.
-        # Ambient `pnpm` is a corepack shim that re-pins to the repo's
-        # packageManager field, and old pnpm (7.x) cannot run on Node 22
-        # (ERR_INVALID_THIS on every registry fetch). Install was fixed
-        # first; test/build/smoke must not regress to the ambient shim.
-        pnpm = ["npx", "-y", "pnpm@9"]
+        # Every pnpm invocation goes through an explicitly versioned pnpm via
+        # npx — never the ambient corepack shim. The version is the repo's own
+        # packageManager pin when it is modern (config.detect_pnpm_version),
+        # else 9. History of this line, because it has broken in BOTH
+        # directions: old pnpm (7.x) cannot run on Node 22 (ERR_INVALID_THIS),
+        # which forced the pin to 9 — and then pnpm 10/11 repos (pathe) began
+        # using pnpm-workspace.yaml as a plain config file with no `packages`
+        # field, which pnpm 9 rejects as a broken workspace ("packages field
+        # missing or empty"). The repo's own modern pin is the only version
+        # its config is guaranteed to parse under.
+        pnpm = ["npx", "-y", f"pnpm@{pnpm_version}"]
         test = list(pnpm)
         if filter:
             test += ["--filter", filter]
