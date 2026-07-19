@@ -126,3 +126,49 @@ def test_pr_comment_renders_the_audit_line(tmp_path):
     assert "Auditor (advisory)" in out.stdout
     assert "likely false positive" in out.stdout
     assert "never promised" in out.stdout
+
+
+def test_fp_without_evidence_is_downgraded():
+    # A dismissal that cites no source line has not earned the FP call.
+    # This guards the r2-inversion class: a real strict catch was flagged FP.
+    import types, json as _json
+    calls = []
+    def create(**kwargs):
+        calls.append(kwargs)
+        payload = {"assessment": "likely_false_positive",
+                   "reason": "the agent assumed a different rule", "evidence": ""}
+        msg = types.SimpleNamespace(content=_json.dumps(payload))
+        return types.SimpleNamespace(choices=[types.SimpleNamespace(message=msg)])
+    client = types.SimpleNamespace(
+        chat=types.SimpleNamespace(completions=types.SimpleNamespace(create=create)))
+    from agentboard.agents.gap_auditor import GapAuditor
+    from agentboard.review import ReviewFinding
+    a = GapAuditor(model="gpt-5.5", client=client)
+    f = ReviewFinding(behavior="x", status="confirmed_gap",
+                      test_code="test('t',()=>{})", observed="AssertionError: expected /foobar to be /foo/foobar")
+    a.audit("const _base = 1;", f)
+    assert f.audit == "uncertain"                     # NOT false positive
+    assert "downgraded" in f.audit_reason
+
+
+def test_empty_reason_triggers_one_retry():
+    import types, json as _json
+    from agentboard.agents.gap_auditor import GapAuditor
+    from agentboard.review import ReviewFinding
+    seq = [
+        {"assessment": "uncertain", "reason": "", "evidence": ""},
+        {"assessment": "likely_real", "reason": "drops the field", "evidence": "line 12 skips it"},
+    ]
+    box = {"i": 0}
+    def create(**kwargs):
+        p = seq[min(box["i"], len(seq) - 1)]; box["i"] += 1
+        msg = types.SimpleNamespace(content=_json.dumps(p))
+        return types.SimpleNamespace(choices=[types.SimpleNamespace(message=msg)])
+    client = types.SimpleNamespace(
+        chat=types.SimpleNamespace(completions=types.SimpleNamespace(create=create)))
+    a = GapAuditor(model="gpt-5.5", client=client)
+    f = ReviewFinding(behavior="x", status="confirmed_gap", test_code="t", observed="AssertionError: x")
+    a.audit("src", f)
+    assert box["i"] == 2                              # retried once
+    assert f.audit == "likely_real"
+    assert f.audit_reason == "drops the field"

@@ -39,14 +39,18 @@ Reason strictly from the SOURCE:
 - A test can fail for three reasons: (1) the tool has a real defect, (2) the agent asserted a behavior the tool never promised (design disagreement / wrong assumption), or (3) the agent's test setup didn't create what it assumed (so the tool correctly returned empty/less).
 - Cases (2) and (3) are FALSE POSITIVES. Only (1) is a real gap.
 
-Be skeptical of the agent. If the source shows the tool behaving consistently by its own clear rule, and the agent simply expected a different rule, that is likely_false_positive — even though the test really failed.
+Be skeptical of the agent, but be MORE skeptical of dismissing a real bug. Calling a genuine defect a false positive is the worst error you can make here: the failing test already EXECUTED against real code, so the burden of proof is on the dismissal, not on the bug. A test that ran and failed is presumed to reflect a real defect UNTIL you can quote the exact source line or rule that proves the agent asserted something the code never promised.
+
+HARD BAR FOR likely_false_positive: you may only answer likely_false_positive if you can QUOTE the specific line(s) of source that establish the code's actual contract and show the agent's assertion contradicts that contract (a design disagreement) OR show the test's setup did not create what it assumed. Put that quoted line in "evidence". If you cannot quote such a line, you are NOT permitted to say likely_false_positive — answer likely_real or, only if the code path is genuinely untraceable, uncertain.
+
+WATCH FOR REAL BUGS THAT LOOK BENIGN: if the observed failure shows actual state being lost, mutated, or fabricated (e.g. a prototype changed, a value dropped, a count off by one, "expected true to be false" on a pollution check), lean likely_real — those are the exact signatures of the defects this tool exists to catch, and they are easy to wave away as "the agent's assumption."
 
 COMMIT to a call. "uncertain" is ONLY for when you genuinely cannot find the relevant code or the source is truly ambiguous — it is NOT a safe default. If you can trace the code path that produces the value under test, you MUST decide likely_real or likely_false_positive:
 - If the code plainly produces a WRONG result for a valid input the intent covers (loses, duplicates, or fabricates information), say likely_real.
-- If the code behaves consistently by its own clear rule and the agent merely assumed a different rule, or the test's setup did not create what it assumed, say likely_false_positive.
+- If the code behaves consistently by its own clear rule AND you can quote that rule, and the agent merely assumed a different rule, say likely_false_positive.
 Do not hide correct analysis behind "uncertain." If your reasoning has identified the mechanism, state the verdict that reasoning implies.
 
-You MUST always fill in "reason" and "evidence" with specifics from the source (name the behavior and the lines/logic). An empty reason is not acceptable.
+You MUST always fill in "reason" and "evidence" with specifics from the source (name the behavior and the lines/logic). An empty reason is not acceptable; a likely_false_positive with no quoted source line is not acceptable.
 
 Output ONLY JSON:
 {"assessment": "likely_real" | "likely_false_positive" | "uncertain",
@@ -110,11 +114,25 @@ class GapAuditor:
         return _loads_one(text)
 
     def audit(self, source: str, finding: ReviewFinding) -> ReviewFinding:
-        """Annotate a confirmed_gap with an advisory assessment. Verdict UNCHANGED."""
+        """Annotate a confirmed_gap with an advisory assessment. Verdict UNCHANGED.
+
+        Two guards against the auditor's own failure modes, both learned from a
+        benchmark run:
+          * empty reason -> retry once. Sonnet hedged 'uncertain' with a blank
+            reason on ~6 gaps (concentrated on prototype-semantics questions); a
+            single retry recovers most into a committed, reasoned call.
+          * likely_false_positive with no quoted source line -> DOWNGRADE to
+            uncertain. Dismissing a real, executed failure is the costliest
+            error here (it once flagged a genuine strict catch as FP), so a
+            dismissal that cannot cite the contract it relies on is not trusted.
+        """
         if finding.status != "confirmed_gap":
             return finding
         try:
             data = self._ask(source, finding)
+            reason = str(data.get("reason", "")).strip()
+            if not reason:  # empty-reason hedge -> one retry
+                data = self._ask(source, finding)
         except KeyError as e:  # missing API key — make it LOUD, not a silent skip
             finding.audit = "not_audited"
             finding.audit_reason = f"auditor could not run: missing {e} — gap is UNVERIFIED"
@@ -128,9 +146,18 @@ class GapAuditor:
         assessment = data.get("assessment", "uncertain")
         if assessment not in ("likely_real", "likely_false_positive", "uncertain"):
             assessment = "uncertain"
+        reason = str(data.get("reason", "")).strip()[:200]
+        evidence = str(data.get("evidence", "")).strip()[:300]
+        # A dismissal must cite the contract it relies on. No evidence quote ->
+        # the auditor has not earned the FP call; downgrade so a real bug is
+        # never buried under an unsupported "false positive".
+        if assessment == "likely_false_positive" and not evidence:
+            assessment = "uncertain"
+            reason = ("(downgraded from false-positive: no source line cited) "
+                      + reason)[:200]
         finding.audit = assessment
-        finding.audit_reason = str(data.get("reason", "")).strip()[:200]
-        finding.audit_evidence = str(data.get("evidence", "")).strip()[:300]
+        finding.audit_reason = reason
+        finding.audit_evidence = evidence
         return finding
 
     def audit_all(self, source: str, findings: list[ReviewFinding]) -> list[ReviewFinding]:
