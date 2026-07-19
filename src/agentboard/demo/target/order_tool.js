@@ -14,3 +14,9 @@ export function findOrders(orders, status, pageSize) {
   const size = clampPageSize(pageSize, 1, 50);
   return orders.filter((o) => o.status === status).slice(0, size);
 }
+
+/** Number of pages needed to show `total` orders at `pageSize` per page. */
+export function totalPages(total, pageSize) {
+  const size = clampPageSize(pageSize, 1, 50);
+  return Math.ceil(total / size);
+}
