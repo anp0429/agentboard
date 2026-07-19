@@ -1,10 +1,14 @@
 # agentboard
 
-A pre-checkin review gate that verifies changes by executing tests, not by
-judging diffs. An LLM proposes edge-case tests from your intent and your
-change. A deterministic harness runs each test against the real code in a
-clean checkout. A behavior is reported as a gap only if its test compiles,
-runs, and fails. No model is involved in the pass or fail decision.
+A review gate that verifies changes by executing tests, not by judging
+diffs. An LLM proposes edge-case tests from your intent and your change. A
+deterministic harness runs each test against the real code in a clean
+checkout. A behavior is reported as a gap only if its test compiles, runs,
+and fails. No model is involved in the pass or fail decision.
+
+One tool, two moments: the author runs it before pushing and fixes what is
+real, so the change arrives cleaner; the maintainer sees it on the pull
+request and decides faster. Nobody is replaced at either end.
 
 ```
 agentboard review --target src/parser.ts --intent "handle empty input"
@@ -49,11 +53,17 @@ agentboard review --repo . --target src/parser.ts --intent "handle empty input"
 ```
 
 Defaults: head is your current branch, base is its fork point, and the tests
-file is auto-detected: co-located or basename-matched (with closest-path
-disambiguation in monorepos), falling back to the test file the reviewed diff
-itself touches when the diff names exactly one. Intent can come from
-`--intent`, from `--issue <url>`, or from the branch's commit messages if you
-pass neither. A preflight validates refs,
+file is auto-detected by four rules in order: co-located, basename-matched
+(with closest-path disambiguation in monorepos), the test file the reviewed
+diff itself touches when the diff names exactly one, and, for an explicitly
+named target only, the sole test file in the target's own directory. Intent
+can come from `--intent`, from `--issue <url>`, or from the branch's commit
+messages if you pass neither.
+
+The JS toolchain runs from the target's project root, found by walking up to
+the nearest ancestor with a lockfile (else a package.json), so a package
+nested inside a larger repository works, and workspace repos still install
+at their top level. A preflight validates refs,
 files, and keys before any tokens are spent.
 
 ## Multi-file reviews
@@ -88,6 +98,37 @@ Before proposals begin, a per-depth cost curve prints the impacted file count
 and test-gap count at each depth. Selections larger than `--max-files`
 (default 20) require `--yes`. The graph decides only which files are in
 scope; every selected file goes through the same gate as a single-target run.
+
+## Reviewing pull requests in CI
+
+The same gate runs as a GitHub Action and posts its findings as a PR
+comment. The comment shows each confirmed gap with the failing test's source
+and its observed output, so a reviewer can judge the evidence in seconds;
+everything that passed or was already covered is collapsed. It is advisory
+by design: gaps never fail the build, nothing is auto-approved, and the
+decision stays with a human at both ends.
+
+The workflow lives at `.github/workflows/agentboard-review.yml` with the
+comment renderer at `scripts/render_pr_comment.py`. It picks the first
+changed source file in the PR, skips quietly when a PR changes no reviewable
+code, and skips fork PRs entirely (repository secrets are withheld from
+forks, so the model key is unavailable there; that is correct, not a bug).
+
+This repository runs it on itself:
+[PR #1](https://github.com/anp0429/agentboard/pull/1) is agentboard
+reviewing its own pull request, finding the demo's planted bug through three
+functions with an executed failing test for each.
+
+## Machine-readable output
+
+`--json-out <path>` writes the run as a JSON artifact (`schema_version: 1`):
+repo, base, head, intent, targets, `env_error`, verdict counts, and one
+entry per finding with `behavior`, `status`, `observed`, `source_file`, and
+`test_code`. `test_code` and `observed` are null for `skipped_covered`
+findings, which never generated a test. Exit codes are advisory: 0 means
+the run completed (gaps live in the JSON, never in the exit code), 1 means
+it could not run. This artifact is the boundary every integration consumes;
+the engine itself knows nothing about pull requests.
 
 ## How it works
 
