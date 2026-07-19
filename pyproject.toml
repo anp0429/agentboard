@@ -11,6 +11,10 @@ requires-python = ">=3.11"
 license = { text = "MIT" }
 dependencies = [
     "langgraph>=1.0",
+    # Imported lazily at every call site (keeps import time down), but the
+    # tool cannot propose a single test without it: undeclared, a clean
+    # `pip install` yields a review that silently finds nothing.
+    "openai>=1.0",
 ]
 
 [project.scripts]

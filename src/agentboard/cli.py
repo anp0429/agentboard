@@ -388,6 +388,18 @@ def review(args) -> int:
         for f in findings:
             f.source_file = tgt
         print(f"  {len(findings)} behavior(s) to gate")
+        if not findings:
+            # A reviewer that proposed nothing has not reviewed anything.
+            # Reporting "no gaps" here would be a clean bill of health from
+            # an exam that never happened, so this is a hard stop, not a
+            # warning that scrolls past. The usual cause is a missing or
+            # unreachable model client (watch for [warn] lines above).
+            print("agentboard review — cannot continue:")
+            print(f"  - the reviewer proposed 0 behaviors for {tgt}. Nothing "
+                  "was reviewed.")
+            print("  - check any [warn] lines above: a missing model client "
+                  "or API key is the usual cause.")
+            return 1
         sub = ReviewRun(intent=intent, target=tgt, findings=findings)
         FindingVerifier(repo, profile, tests_file=tst_path,
                         timeout=args.timeout).run(sub)
