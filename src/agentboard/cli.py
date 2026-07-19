@@ -23,6 +23,7 @@ import tempfile
 import time
 
 from .agents.critic_agent import CriticAgent
+from .agents.gap_auditor import GapAuditor
 from .agents.reviewer_agent import ReviewerAgent
 from .config import (
     detect_project_dir,
@@ -376,6 +377,17 @@ def review(args) -> int:
             return 1
         pairs.extend(extra)
 
+    # The advisory precision layer: a SECOND model reads the source and each
+    # confirmed gap's failing test, and flags likely false positives (wrong
+    # assertions). It annotates only — the gate's verdict never changes.
+    # Best with a model different from the reviewer's, so their blind spots
+    # don't correlate: --audit-model. Runs only on confirmed gaps, so it
+    # costs nothing on a clean run.
+    auditor = None
+    if not args.no_audit:
+        audit_model = args.audit_model or cfg.critic_model or cfg.reviewer_model
+        auditor = GapAuditor(model=audit_model)
+
     run = ReviewRun(intent=intent, target=target)
     for tgt, tst_path in pairs:
         if len(pairs) > 1:
@@ -413,6 +425,12 @@ def review(args) -> int:
         FindingVerifier(repo, profile, tests_file=tst_path,
                         timeout=args.timeout,
                         project_dir=project_dir).run(sub)
+        if auditor is not None:
+            gap_count = sum(1 for f in sub.findings if f.status == "confirmed_gap")
+            if gap_count:
+                print(f"  auditing {gap_count} confirmed gap(s) with "
+                      f"{auditor.model} (advisory — verdicts unchanged)…")
+                auditor.audit_all(src, sub.findings)
         run.findings.extend(sub.findings)
         # env_error lives on the per-file sub-run; merging only findings threw
         # it away, so the banner never rendered anywhere and "see banner"
@@ -436,6 +454,9 @@ def review(args) -> int:
         print(f"  [{f.status:14}] {tag}{f.behavior[:60]}")
         if f.observed and f.status not in ("handled", "skipped_covered"):
             print(f"       -> {f.observed[:120]}")
+        if f.audit:
+            print(f"       [auditor] {f.audit}"
+                  + (f" — {f.audit_reason[:100]}" if f.audit_reason else ""))
     board = render_review_html(run, args.board)
     print(f"\n{verdict_summary(run)}")
     print(f"{len(run.gaps)} confirmed gap(s) across {len(pairs)} file(s). "
@@ -477,6 +498,11 @@ def _write_json_out(path, run, *, repo, base, head, pairs, board) -> None:
                 "observed": f.observed,
                 "source_file": f.source_file,
                 "test_code": f.test_code,
+                # advisory auditor annotations — null unless a confirmed_gap
+                # was audited. Additive and nullable, so schema_version stays 1.
+                "audit": f.audit or None,
+                "audit_reason": f.audit_reason or None,
+                "audit_evidence": f.audit_evidence or None,
             }
             for f in run.findings
         ],
@@ -675,6 +701,15 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--intent", default="", help="what the change is meant to do")
     r.add_argument("--issue", default="", help="issue URL to use as intent instead")
     r.add_argument("--no-critic", action="store_true", help="skip the gap-hunting critic pass")
+    r.add_argument("--audit-model", default="",
+                   help="model for the advisory gap auditor, which reads the "
+                        "source and each confirmed gap's failing test and "
+                        "flags likely false positives (wrong assertions). "
+                        "Annotates only; verdicts never change. Best set to a "
+                        "DIFFERENT model than the reviewer so blind spots "
+                        "don't correlate. Default: the critic model.")
+    r.add_argument("--no-audit", action="store_true",
+                   help="skip the advisory gap auditor")
     r.add_argument("--fresh", action="store_true", help="resample proposals (ignore cache)")
     r.add_argument("--timeout", type=int, default=1800, help="per-gate timeout seconds")
     r.add_argument("--also", action="append", default=[],

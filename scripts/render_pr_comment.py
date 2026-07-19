@@ -56,6 +56,14 @@ def main() -> int:
             lines.append(f"**{i}. {f.get('behavior', '(no description)')}**")
             if f.get("observed"):
                 lines += ["", _code(f["observed"])]
+            if f.get("audit"):
+                # advisory triage from a second model; the verdict above is
+                # still the executed test's, and a human still decides.
+                note = f"*Auditor (advisory): **{f['audit'].replace('_', ' ')}**"
+                if f.get("audit_reason"):
+                    note += f" — {f['audit_reason']}"
+                note += "*"
+                lines += ["", note]
             if f.get("test_code"):
                 lines += [
                     "",
