@@ -25,6 +25,7 @@ import time
 from .agents.critic_agent import CriticAgent
 from .agents.reviewer_agent import ReviewerAgent
 from .config import (
+    detect_project_dir,
     build_profile,
     current_branch,
     fork_point,
@@ -180,7 +181,7 @@ def _tests_from_diff(repo: str, base: str, head: str) -> list[str]:
     return out
 
 
-def _default_tests_for(repo: str, target: str) -> str:
+def _default_tests_for(repo: str, target: str, dir_fallback: bool = True) -> str:
     """Find the tests file for a target. Tries, in order: co-located
     (foo.test.ts), the same basename under any tests dir, and a
     singular/plural basename variant (errors.ts <-> error.test.ts, which is
@@ -234,7 +235,14 @@ def _default_tests_for(repo: str, target: str) -> str:
         # directory holding order_tool.js and demo.test.js). "Exactly one"
         # is the guard: with two or more there is nothing to infer, so we
         # fall through to asking for --tests rather than guessing.
+        #
+        # Only for an explicitly named --target (dir_fallback=True). Files
+        # added automatically (--also, blast-radius scoping) must find a
+        # real match or be skipped: inferring at scale is how twenty
+        # unrelated files end up gated against one suite.
         siblings: list[str] = []
+        if not dir_fallback:
+            return colocated
         for sfx in (".ts", ".tsx", ".js", ".jsx", ".mjs"):
             for pat in (f"*.test{sfx}", f"*.spec{sfx}"):
                 siblings += _glob.glob(os.path.join(target_dir, pat))
@@ -350,7 +358,11 @@ def review(args) -> int:
               "silently reviewing the whole file")
         return 1
 
-    profile = build_profile(repo, cfg, tests)
+    project_dir = detect_project_dir(repo, target)
+    if project_dir != ".":
+        print(f"project root: {project_dir} (nearest lockfile/package.json "
+              "above the target)")
+    profile = build_profile(repo, cfg, tests, project_dir=project_dir)
     critic = CriticAgent(model=cfg.critic_model) if need_critic else None
 
     # the set of (target, tests) pairs to review. Default: the one --target.
@@ -381,9 +393,22 @@ def review(args) -> int:
         for f in findings:
             f.source_file = tgt
         print(f"  {len(findings)} behavior(s) to gate")
+        if not findings:
+            # A reviewer that proposed nothing has not reviewed anything.
+            # Reporting "no gaps" here would be a clean bill of health from
+            # an exam that never happened, so this is a hard stop, not a
+            # warning that scrolls past. The usual cause is a missing or
+            # unreachable model client (watch for [warn] lines above).
+            print("agentboard review — cannot continue:")
+            print(f"  - the reviewer proposed 0 behaviors for {tgt}. Nothing "
+                  "was reviewed.")
+            print("  - check any [warn] lines above: a missing model client "
+                  "or API key is the usual cause.")
+            return 1
         sub = ReviewRun(intent=intent, target=tgt, findings=findings)
         FindingVerifier(repo, profile, tests_file=tst_path,
-                        timeout=args.timeout).run(sub)
+                        timeout=args.timeout,
+                        project_dir=project_dir).run(sub)
         run.findings.extend(sub.findings)
         # env_error lives on the per-file sub-run; merging only findings threw
         # it away, so the banner never rendered anywhere and "see banner"
@@ -467,7 +492,7 @@ def _resolve_targets(repo, target, tests, args):
         if ":" in spec:
             tgt, tst = spec.split(":", 1)
         else:
-            tgt, tst = spec, _default_tests_for(repo, spec)
+            tgt, tst = spec, _default_tests_for(repo, spec, dir_fallback=False)
         if not tst or not os.path.isfile(os.path.join(repo, tst)):
             print(f"  (skipping {tgt}: no tests file found — pass file:tests)")
             continue
@@ -561,7 +586,7 @@ def _blast_pairs(repo, base, head, args, have):
     def has_tests(f: str) -> bool:
         rf = _rel(repo, f)
         if rf not in _memo:
-            tst = _default_tests_for(repo, rf)
+            tst = _default_tests_for(repo, rf, dir_fallback=False)
             _memo[rf] = bool(tst) and os.path.isfile(os.path.join(repo, tst))
         return _memo[rf]
 
@@ -610,7 +635,7 @@ def _blast_pairs(repo, base, head, args, have):
 
     extra: list[tuple[str, str]] = []
     for f in selected:
-        tst = _default_tests_for(repo, f) if has_tests(f) else ""
+        tst = _default_tests_for(repo, f, dir_fallback=False) if has_tests(f) else ""
         if not tst:
             tst = _host_tests_for(repo, f)
             if tst:

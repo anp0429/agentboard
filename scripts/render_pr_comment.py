@@ -66,6 +66,13 @@ def main() -> int:
                     "</details>",
                 ]
             lines.append("")
+    elif doc.get("env_error"):
+        # Nothing ran, so "no gaps" would be a lie. The banner above already
+        # said why; do not follow it with a clean bill of health.
+        lines += [
+            "No verdicts: the run stopped before any test executed.",
+            "",
+        ]
     else:
         lines += [
             "No confirmed gaps. Every proposed behavior either passed "

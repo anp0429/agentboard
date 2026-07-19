@@ -162,8 +162,14 @@ class FindingVerifier:
         tests_file: str,
         timeout: int = 1800,
         reuse_warm: bool = False,
+        project_dir: str = ".",
     ):
         self.repo_root = repo_root
+        # Repo-relative dir the JS toolchain runs in. The warm copy is still
+        # the whole repo (tests_file and the result file stay repo-relative),
+        # but install/build/smoke/test all execute HERE, so a package nested
+        # inside a larger repo works. "." for every single-package repo.
+        self.project_dir = project_dir
         self.profile = profile
         self.tests_file = (
             tests_file  # where agent tests get injected (helpers in scope)
@@ -177,6 +183,9 @@ class FindingVerifier:
         self._warm_root: str | None = None
         self._pristine_tests: str | None = None
         self._prep_error: str = ""
+
+    def _workdir(self, repo: str) -> str:
+        return os.path.normpath(os.path.join(repo, self.project_dir))
 
     def _run(self, args, cwd):
         env = {**os.environ, **self.profile.env}
@@ -224,13 +233,13 @@ class FindingVerifier:
             self._pristine_tests = f.read()
         # install + build ONCE
         t0 = time.monotonic()
-        inst = self._run(self.profile.install_cmd, repo)
+        inst = self._run(self.profile.install_cmd, self._workdir(repo))
         phases.append(f"install {time.monotonic() - t0:.1f}s")
         if inst.returncode != 0:
             self._prep_error = f"install failed: {_tail(inst.stderr or inst.stdout)}"
         elif self.profile.build_cmd:
             t0 = time.monotonic()
-            bld = self._run(self.profile.build_cmd, repo)
+            bld = self._run(self.profile.build_cmd, self._workdir(repo))
             phases.append(f"build {time.monotonic() - t0:.1f}s")
             if bld.returncode != 0:
                 self._prep_error = f"build failed: {_tail(bld.stderr or bld.stdout)}"
@@ -240,7 +249,7 @@ class FindingVerifier:
         if not self._prep_error and getattr(self.profile, "smoke_cmd", None):
             t0 = time.monotonic()
             try:
-                smoke = self._run(self.profile.smoke_cmd, repo)
+                smoke = self._run(self.profile.smoke_cmd, self._workdir(repo))
                 phases.append(f"smoke {time.monotonic() - t0:.1f}s")
                 if smoke.returncode != 0:
                     self._prep_error = (
@@ -297,7 +306,7 @@ class FindingVerifier:
                     self.profile.test_base
                     + ["-t", title, "--typecheck.enabled=false",
                        "--reporter=json", f"--outputFile={out}"],
-                    repo,
+                    self._workdir(repo),
                 )
             except subprocess.TimeoutExpired:
                 finding.status = "timed_out"
@@ -426,7 +435,7 @@ class FindingVerifier:
                     self.profile.test_base
                     + ["-t", "___ab", "--typecheck.enabled=false",
                        "--reporter=json", f"--outputFile={out}"],
-                    repo,
+                    self._workdir(repo),
                 )
             except subprocess.TimeoutExpired:
                 # the BATCH hit the subprocess limit — which test hung is

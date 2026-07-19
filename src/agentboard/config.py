@@ -100,11 +100,52 @@ def detect_profile_kind(repo_root: str) -> str:
     return ""
 
 
-def build_profile(repo_root: str, cfg: Config, tests_file: str) -> RepoProfile:
-    kind = cfg.profile_kind or detect_profile_kind(repo_root)
+LOCKFILES = ("pnpm-lock.yaml", "package-lock.json", "yarn.lock", "bun.lockb")
+
+
+def detect_project_dir(repo_root: str, target: str) -> str:
+    """Repo-relative directory the JS toolchain should run in.
+
+    The git repo root is not always the JS project root: a package can be
+    nested inside a larger repo (agentboard's own Python repo carries a JS
+    fixture under src/agentboard/demo/target/). Installing at the repo root
+    then fails with "no package.json found".
+
+    Walk up from the target: nearest ancestor holding a LOCKFILE wins,
+    because that is the install root for workspaces (zod is a pnpm
+    workspace whose install must run at the top, and its nested
+    packages/zod/package.json must NOT win). Only if no lockfile exists
+    anywhere on the path does the nearest package.json win. Repo root is
+    the fallback, which is what every single-package repo resolves to, so
+    existing behavior is unchanged.
+    """
+    root = os.path.abspath(repo_root)
+    d = os.path.dirname(os.path.abspath(os.path.join(root, target)))
+    chain: list[str] = []
+    while True:
+        chain.append(d)
+        if os.path.normpath(d) == os.path.normpath(root) or len(d) <= len(root):
+            break
+        parent = os.path.dirname(d)
+        if parent == d:
+            break
+        d = parent
+    for candidate in chain:
+        if any(os.path.isfile(os.path.join(candidate, lf)) for lf in LOCKFILES):
+            return os.path.relpath(candidate, root)
+    for candidate in chain:
+        if os.path.isfile(os.path.join(candidate, "package.json")):
+            return os.path.relpath(candidate, root)
+    return "."
+
+
+def build_profile(repo_root: str, cfg: Config, tests_file: str,
+                  project_dir: str = ".") -> RepoProfile:
+    scan_root = os.path.normpath(os.path.join(repo_root, project_dir))
+    kind = cfg.profile_kind or detect_profile_kind(scan_root)
     project = cfg.project
     if project is None:
-        detected = detect_vitest_projects(repo_root)
+        detected = detect_vitest_projects(scan_root)
         # only auto-apply when exactly one project is declared; ambiguity
         # (multiple projects) is left to the user / --project to avoid guessing
         if len(detected) == 1:
