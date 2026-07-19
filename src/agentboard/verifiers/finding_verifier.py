@@ -60,7 +60,14 @@ def _inject(pristine: str, test_code: str) -> tuple[str | None, str]:
     if not code:
         return None, "test contained only imports"
     if "\ndescribe(" in pristine or pristine.startswith("describe("):
-        idx = pristine.rstrip().rfind("\n});")
+        tail = pristine.rstrip()
+        # Column-0 close, with or without a semicolon: prettier semi:false
+        # repos (zustand was the one that surfaced this) end the block with
+        # `})` not `});`. Indented closes still never match, so the top-level
+        # placement guarantee is unchanged.
+        idx = tail.rfind("\n});")
+        if idx == -1:
+            idx = tail.rfind("\n})")
         if idx == -1:
             return None, "could not find describe-block close to inject before"
         return pristine[:idx] + "\n\n" + code + "\n" + pristine[idx:], ""

@@ -208,3 +208,24 @@ def test_inject_strips_multiline_imports():
     assert err == ""
     assert "vitest" not in out
     assert 'test("new"' in out
+# Append the body of this file to tests/test_sandbox_trust.py, next to the
+# existing injection-placement tests (the zod-lesson section).
+
+
+def test_inject_into_semicolonless_describe_file():
+    """prettier semi:false repos close describe with `})` not `});` —
+    zustand was the repo that surfaced this. Injection must land inside
+    the block, exactly as it does for the semicolon style."""
+    from agentboard.verifiers.finding_verifier import _inject
+
+    pristine = (
+        "import { it } from 'vitest'\n"
+        "describe('d', () => {\n"
+        "  it('a', () => {\n"
+        "  })\n"
+        "})\n"
+    )
+    out, err = _inject(pristine, "test('new', () => {})")
+    assert err == ""
+    assert out is not None
+    assert out.index("test('new'") < out.rindex("\n})")
