@@ -2,6 +2,13 @@
 WITHOUT an LLM. That testability is the whole reason verification lives outside
 the generative path.
 """
+import pytest
+
+# The whiteboard/loop path is the legacy API and needs the [whiteboard] extra
+# (LangGraph). The core review gate does not, so a lean install skips this
+# file rather than failing to import it.
+pytest.importorskip("langgraph")
+
 from agentboard import (
     Node,
     Proposal,

@@ -5,23 +5,52 @@ build-backend = "hatchling.build"
 [project]
 name = "agentboard"
 version = "0.1.0"
-description = "Project any multi-agent run as an iteration-tagged whiteboard: verify before commit, document everything."
+description = "A code review gate that verifies changes by executing tests, not by judging diffs. An LLM proposes edge-case tests; a deterministic harness runs each one; a behavior is a gap only if its test runs and fails."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
-dependencies = [
-    "langgraph>=1.0",
-    # Imported lazily at every call site (keeps import time down), but the
-    # tool cannot propose a single test without it: undeclared, a clean
-    # `pip install` yields a review that silently finds nothing.
-    "openai>=1.0",
+authors = [{ name = "Ankita", email = "anp8729@gmail.com" }]
+keywords = [
+    "code-review",
+    "testing",
+    "llm",
+    "agents",
+    "verification",
+    "vitest",
+    "ci",
 ]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Testing",
+    "Topic :: Software Development :: Quality Assurance",
+]
+dependencies = [
+    # The reviewer's default models are OpenAI; the auditor's default is
+    # Claude. Both clients are imported lazily (fast startup), but the
+    # documented review+audit flow needs both, so both are declared: an
+    # undeclared client turns into a review that silently proposes nothing.
+    "openai>=1.0",
+    "anthropic>=0.40",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "ruff", "build"]
+# The legacy whiteboard/loop path (loop.py, graph.py) is the only code that
+# needs langgraph. The core `agentboard review` gate does not, so it is an
+# opt-in extra rather than a heavyweight default install.
+whiteboard = ["langgraph>=1.0"]
+
+[project.urls]
+Homepage = "https://github.com/anp0429/agentboard"
+Repository = "https://github.com/anp0429/agentboard"
+Issues = "https://github.com/anp0429/agentboard/issues"
 
 [project.scripts]
 agentboard = "agentboard.cli:main"
-
-[project.optional-dependencies]
-dev = ["pytest"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/agentboard"]

@@ -1,5 +1,8 @@
 # agentboard
 
+[![CI](https://github.com/anp0429/agentboard/actions/workflows/ci.yml/badge.svg)](https://github.com/anp0429/agentboard/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 A review gate that verifies changes by executing tests, not by judging
 diffs. An LLM proposes edge-case tests from your intent and your change. A
 deterministic harness runs each test against the real code in a clean
@@ -23,17 +26,26 @@ comes with a test you can run yourself and watch fail.
 
 ## Quick start
 
+Install (Python 3.11+):
+
+```
+pip install agentboard
+```
+
+Or from source for development: `pip install -e ".[dev]"`.
+
 The demo runs without an API key:
 
 ```
-pip install -e .   # Python 3.11+
 agentboard demo
 agentboard demo --fixed
 ```
 
 It gates a small bundled project with one planted bug. Proposals are
 pre-generated, so the demo exercises the deterministic part of the pipeline:
-the gate finds the gap, and finds it resolved on the fixed variant.
+the gate finds the gap, and finds it resolved on the fixed variant. A live
+review needs `OPENAI_API_KEY` (reviewer) and, for the advisory auditor,
+`ANTHROPIC_API_KEY`.
 
 ## Usage
 
