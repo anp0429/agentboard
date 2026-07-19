@@ -62,10 +62,13 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          # Filenames are PR-controlled data. Passing through env (not inline
+          # expression interpolation) keeps shell metacharacters inert.
+          TARGET: ${{ steps.target.outputs.target }}
         run: |
           agentboard review \
             --repo . \
-            --target "${{ steps.target.outputs.target }}" \
+            --target "$TARGET" \
             --base "$BASE_SHA" \
             --head "$HEAD_SHA" \
             --json-out agentboard-run.json \
