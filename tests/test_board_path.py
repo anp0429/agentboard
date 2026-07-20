@@ -44,3 +44,15 @@ def test_resolved_default_is_outside_any_repo():
     # and specifically not a relative in-repo path
     assert not board.startswith("./")
     assert "review_board.html" in board
+
+
+def test_demo_board_never_lands_in_cwd():
+    # `demo` is everyone's first command, often run inside a repo. Its board
+    # follows the same rule as review: system temp dir, never cwd. Guard the
+    # source so the literal cwd-relative path cannot come back.
+    import inspect
+
+    import agentboard.cli as cli
+
+    src = inspect.getsource(cli.demo) if hasattr(cli, "demo") else inspect.getsource(cli)
+    assert './agentboard_demo_board.html"' not in src.replace("'", '"')

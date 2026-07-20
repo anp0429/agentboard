@@ -147,7 +147,8 @@ def demo(fixed: bool = False) -> int:
     print(f"\n{verdict_summary(run)}")
     print(f"gate time: {time.time() - t0:.1f}s")
 
-    board = os.path.abspath("./agentboard_demo_board.html")
+    # Same rule as review: never write into the user's cwd, it may be a repo.
+    board = os.path.join(tempfile.gettempdir(), "agentboard_demo_board.html")
     render_review_html(run, board)
     print(f"board:     {board}")
 

@@ -265,12 +265,16 @@ not `/models`.
   N² pairings, most of which do not exist in the schema. The fix and the
   generated regression tests (self-referential, cross-schema,
   non-primary-unique, multi-FK, three-column) are merged into main.
-- [colinhacks/zod#6181](https://github.com/colinhacks/zod/pull/6181): ran the
-  same proposed suite against the base and the fix branch. The run confirmed
-  the fix resolves a crash across 11 shapes and surfaced one residual case
+- [colinhacks/zod#6211](https://github.com/colinhacks/zod/issues/6211): ran
+  the proposed suite against an open fix branch
+  ([#6181](https://github.com/colinhacks/zod/pull/6181)). The run confirmed
+  that fix resolves a crash across 11 shapes and surfaced one residual case
   involving a `__proto__` path element, where bracket assignment sets the
-  prototype instead of an own key. The residual was verified in plain
-  JavaScript, and a remedy was verified red to green with no regressions.
+  prototype instead of an own key. Verified in plain JavaScript on published
+  zod (all five inherited names crash both `formatError` and
+  `treeifyError`), filed as issue 6211, and fixed in
+  [PR #6212](https://github.com/colinhacks/zod/pull/6212) covering both
+  functions with regression tests, red to green with no regressions.
 - [unjs/ufo#360](https://github.com/unjs/ufo/pull/360): proposed tests caught
   `withBase`/`withoutBase` treating `/` and `?` as base boundaries but not
   `#`, so a fragment directly after the base path broke both operations.
