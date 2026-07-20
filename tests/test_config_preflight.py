@@ -94,6 +94,10 @@ def test_preflight_passes_on_a_clean_repo(tmp_path, monkeypatch):
 
 def test_preflight_names_the_missing_key(tmp_path, monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    # OPENAI_BASE_URL legitimately waives the key (local/compatible endpoint),
+    # so a developer shell with it exported would flip this test's outcome.
+    # A test's verdict must not depend on the terminal it runs in.
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
     repo = _init_repo(tmp_path)
     open(os.path.join(repo, "a.ts"), "w").close()
     open(os.path.join(repo, "a.test.ts"), "w").close()
