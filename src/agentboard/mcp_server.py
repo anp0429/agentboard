@@ -63,8 +63,8 @@ def _review_args(**overrides) -> argparse.Namespace:
     Kept in one place so a new CLI flag fails loudly here (AttributeError in
     tests) instead of silently diverging between the two adapters."""
     ns = argparse.Namespace(
-        repo=".", target="", tests="", head="", base="", intent="", issue="",
-        no_critic=False, audit_model="", no_audit=False, fresh=False,
+        repo=".", config="", target="", tests="", head="", base="", intent="",
+        issue="", no_critic=False, audit_model="", no_audit=False, fresh=False,
         timeout=1800, also=[], scope="", depth=2, max_files=20, yes=False,
         axis="default", worktree=True, board="", json_out="", dataset=None,
     )

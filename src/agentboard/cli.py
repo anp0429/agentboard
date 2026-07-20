@@ -264,12 +264,23 @@ def _default_tests_for(repo: str, target: str, dir_fallback: bool = True) -> str
 
 def init(args) -> int:
     """Write a starter .agentboard.toml, pre-filled with what we can detect."""
-    from .config import CONFIG_NAME, detect_profile_kind, detect_vitest_projects
+    from .config import (
+        CONFIG_NAME,
+        detect_profile_kind,
+        detect_vitest_projects,
+        user_config_path,
+    )
 
     repo = os.path.abspath(os.path.expanduser(args.repo))
-    dest = os.path.join(repo, CONFIG_NAME)
+    if args.user:
+        # Reviewing a repo you don't own: keep its working tree untouched and
+        # put the config in the user config dir, keyed by repo name.
+        dest = user_config_path(repo)
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+    else:
+        dest = os.path.join(repo, CONFIG_NAME)
     if os.path.isfile(dest) and not args.force:
-        print(CONFIG_NAME + " already exists. Use --force to overwrite.")
+        print(dest + " already exists. Use --force to overwrite.")
         return 1
 
     kind = detect_profile_kind(repo) or "pnpm-vitest"
@@ -282,7 +293,9 @@ def init(args) -> int:
         proj_line = '# project = "unit"   # set if your repo uses vitest projects'
 
     lines = [
-        "# agentboard config - committed once, shared by everyone reviewing this repo.",
+        ("# agentboard config - lives outside the repo (per-repo user config)."
+         if args.user else
+         "# agentboard config - committed once, shared by everyone reviewing this repo."),
         'profile = "' + kind + '"',
         proj_line,
         'base = "main"',
@@ -291,7 +304,7 @@ def init(args) -> int:
     ]
     with open(dest, "w", encoding="utf-8") as fh:
         fh.write("\n".join(lines))
-    print("wrote " + CONFIG_NAME)
+    print("wrote " + (dest if args.user else CONFIG_NAME))
     print("  profile: " + kind)
     if len(projects) == 1:
         print("  project: " + projects[0] + " (auto-detected)")
@@ -303,7 +316,7 @@ def init(args) -> int:
 
 def review(args) -> int:
     repo = os.path.abspath(os.path.expanduser(args.repo))
-    cfg = load_config(repo)
+    cfg = load_config(repo, getattr(args, "config", ""))
 
     head = args.head or current_branch(repo)
     base = args.base or cfg.base or (fork_point(repo, head) or "main")
@@ -486,7 +499,16 @@ def review(args) -> int:
         if f.audit:
             print(f"       [auditor] {f.audit}"
                   + (f" — {f.audit_reason[:100]}" if f.audit_reason else ""))
-    board = render_review_html(run, args.board)
+    # The board must NOT default into the reviewed repo. Writing
+    # ./review_board.html there pollutes the working tree, and a `git add -A`
+    # can commit it — which then feeds back as a bogus diff on the next review
+    # (a real dogfooding bug: a 270-line board became a 19k-char "change" and
+    # starved the reviewer to zero behaviors). Default to the system temp dir;
+    # an explicit --board still wins for anyone who wants it in-tree.
+    board_path = args.board or os.path.join(
+        tempfile.gettempdir(), "agentboard_review_board.html"
+    )
+    board = render_review_html(run, board_path)
     print(f"\n{verdict_summary(run)}")
     print(f"{len(run.gaps)} confirmed gap(s) across {len(pairs)} file(s). "
           f"Board: {board}")
@@ -730,9 +752,15 @@ def main(argv: list[str] | None = None) -> int:
     i = sub.add_parser("init", help="write a starter .agentboard.toml for this repo")
     i.add_argument("--repo", default=".", help="path to the repo (default: cwd)")
     i.add_argument("--force", action="store_true", help="overwrite existing config")
+    i.add_argument("--user", action="store_true",
+                   help="write to the user config dir instead of the repo "
+                        "(for repos you don't own; leaves their tree untouched)")
 
     r = sub.add_parser("review", help="review a change on a repo before you push")
     r.add_argument("--repo", default=".", help="path to the repo (default: cwd)")
+    r.add_argument("--config", default="",
+                   help="config file to use (default: .agentboard.toml in the "
+                        "repo, else the per-repo user config)")
     r.add_argument("--target", required=True, help="file the change touches (rel to repo)")
     r.add_argument("--tests", default="", help="tests file (default: <target>.test.<ext>)")
     r.add_argument("--head", default="", help="ref to review (default: current branch)")
@@ -774,7 +802,9 @@ def main(argv: list[str] | None = None) -> int:
                         "vs --base (default HEAD), and the gate executes the "
                         "same on-disk state it diffed. This is the mode a "
                         "coding agent uses mid-session, before committing.")
-    r.add_argument("--board", default="./review_board.html", help="output board path")
+    r.add_argument("--board", default="",
+                   help="output board path (default: a file in the system temp "
+                        "dir, never inside the reviewed repo)")
     r.add_argument("--json-out", default="",
                    help="also write a machine-readable run artifact "
                         "(schema_version 1) to this path")

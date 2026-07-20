@@ -38,8 +38,32 @@ class Config:
     extra: dict = field(default_factory=dict)
 
 
-def load_config(repo_root: str) -> Config:
-    path = os.path.join(repo_root, CONFIG_NAME)
+def user_config_path(repo_root: str) -> str:
+    """Where a repo's config lives when it should not live in the repo.
+
+    Reviewing a repo you don't own must leave its working tree untouched:
+    an untracked .agentboard.toml trips pre-push hooks and gets swept up by
+    `git add -A`. The same settings can live in the user config dir instead,
+    keyed by the repo directory's basename:
+    <XDG_CONFIG_HOME or ~/.config>/agentboard/repos/<name>.toml
+    """
+    base = os.environ.get("XDG_CONFIG_HOME") or os.path.join(
+        os.path.expanduser("~"), ".config")
+    name = os.path.basename(os.path.abspath(repo_root)) or "default"
+    return os.path.join(base, "agentboard", "repos", name + ".toml")
+
+
+def load_config(repo_root: str, config_path: str = "") -> Config:
+    """Resolve and load config. Precedence: explicit --config path, then
+    .agentboard.toml in the repo, then the per-repo user config file."""
+    if config_path:
+        path = os.path.expanduser(config_path)
+        if not os.path.isfile(path):
+            raise SystemExit("--config " + config_path + ": file not found")
+    else:
+        path = os.path.join(repo_root, CONFIG_NAME)
+        if not os.path.isfile(path):
+            path = user_config_path(repo_root)
     if not os.path.isfile(path):
         return Config()
     with open(path, "rb") as fh:

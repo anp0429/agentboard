@@ -13,7 +13,14 @@ gate, so a lean install does not pull LangGraph, and the imports below degrade
 to absent rather than crashing `import agentboard`.
 """
 
-__version__ = "0.1.0"
+# Single source of truth is pyproject.toml; read it from installed metadata
+# so this can never drift again (it sat at 0.1.0 through four releases).
+try:
+    from importlib.metadata import version as _pkg_version
+
+    __version__ = _pkg_version("reviewgate")
+except Exception:  # not installed (e.g. running from a bare checkout)
+    __version__ = "0.0.0.dev0"
 
 # Legacy whiteboard exports — available only with the [whiteboard] extra.
 # Wrapped so a lean install (review gate only) imports cleanly without

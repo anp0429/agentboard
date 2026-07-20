@@ -58,6 +58,12 @@ project = "unit"
 harness_notes = "Tests already import the framework; reuse existing helpers."
 ```
 
+Reviewing a repo you don't own? agentboard never needs to write into it.
+Run `agentboard init --user` to keep the config in your user dir
+(`~/.config/agentboard/repos/<repo>.toml`), or pass `--config path.toml`
+explicitly. The review itself also leaves the tree untouched: the board and
+all run artifacts default to the system temp dir.
+
 Review a change before pushing:
 
 ```
