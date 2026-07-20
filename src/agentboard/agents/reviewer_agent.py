@@ -225,6 +225,11 @@ class ReviewerAgent:
                 resp = client.chat.completions.create(
                     model=self.model,
                     response_format={"type": "json_object"},
+                    # a JSON plan never needs the model's full output ceiling;
+                    # an uncapped request lets a chatty provider run for
+                    # minutes and makes metered routers reserve the whole
+                    # ceiling against the account balance.
+                    max_tokens=6000,
                     messages=[
                         {"role": "system", "content": _SYSTEM.format(intent=intent, harness_notes=notes)},
                         {"role": "user", "content": user},

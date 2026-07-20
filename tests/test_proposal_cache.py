@@ -102,3 +102,31 @@ def test_cache_file_holds_only_proposal_fields(tmp_path, monkeypatch):
     raw = json.load(open(os.path.join(str(tmp_path), "k2.json")))
     row = raw["findings"][0]
     assert "status" not in row and "audit" not in row and "observed" not in row
+
+
+class _DeadReviewer(_FakeReviewer):
+    """A reviewer whose model call failed: proposes nothing, like a dead key
+    or unreachable endpoint (the agents catch and return [] on error)."""
+    def review(self, intent, change=""):
+        self.calls += 1
+        return []
+
+
+def test_empty_propose_is_never_cached(tmp_path, monkeypatch, capsys):
+    """A failed propose must not poison future runs. Before this guard, a
+    401'd run cached its empty result, and every later run with the same
+    inputs hit that entry and reported 0 behaviors without retrying the
+    model — an outage made permanent by the cache."""
+    monkeypatch.setenv("AGENTBOARD_CACHE_DIR", str(tmp_path))
+    args = dict(intent="i", change="c", source="s", tests="t")
+
+    dead = _DeadReviewer()
+    out = propose_or_cached(dead, None, **args)
+    assert out == [] and dead.calls == 1
+    assert "not cached" in capsys.readouterr().out
+    assert os.listdir(str(tmp_path)) == [], "empty result must write nothing"
+
+    # same inputs, healthy model now: must SAMPLE, not hit a poisoned entry
+    healthy = _FakeReviewer()
+    out2 = propose_or_cached(healthy, None, **args)
+    assert healthy.calls == 1 and out2[0].behavior == "sampled #1"

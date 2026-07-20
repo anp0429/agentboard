@@ -142,6 +142,14 @@ def propose_or_cached(
     findings = reviewer.review(intent, change=change)
     if critic is not None:
         findings = findings + critic.critique(intent, source, tests, findings)
+    if not findings:
+        # An empty propose is a FAILURE state (dead key, unreachable endpoint,
+        # model returned nothing) — the review hard-stops on it upstream.
+        # Caching it would make the outage permanent: every later run with the
+        # same inputs would hit the empty entry and report 0 behaviors without
+        # ever retrying the model. Failures are not coverage; never cache them.
+        print(f"  proposals: 0 behaviors sampled — not cached ({key[:12]})")
+        return findings
     save(key, findings)
     print(f"  proposals: sampled fresh, cached as {key[:12]}")
     return findings
