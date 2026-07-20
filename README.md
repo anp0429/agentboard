@@ -242,6 +242,15 @@ a missing provider key surfaces as a `[warn]` at propose time rather than a
 preflight stop. And the advisory auditor is a `claude*` model by default;
 point `--audit-model` at any open model, or `--no-audit` to skip it.
 
+Both lanes are verified working: Kimi K2.6 via OpenRouter and local models
+via Ollama, reviewing the same planted bug through the same gate. Measured
+rows (catches, wrong-assertion false positives, cost per review) live in
+[notes/model-comparison.md](notes/model-comparison.md). OpenRouter
+gotchas learned the hard way: its keys start `sk-or-v1-` (an OpenAI
+`sk-proj-` key fails as "missing authentication"), and its `/models`
+endpoint answers without auth, so verify a key against `/chat/completions`,
+not `/models`.
+
 ## Results from real repositories
 
 - [supabase/mcp#317](https://github.com/supabase/mcp/pull/317): proposed
