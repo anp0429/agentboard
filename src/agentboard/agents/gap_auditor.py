@@ -76,6 +76,9 @@ class GapAuditor:
     def __init__(self, model: str = "gpt-5.5", client=None, max_source_chars: int = 16000,
                  log=print):
         self.model = model
+        # optional provider pin from repo config; ambient env still wins
+        # upstream (api.py resolves precedence before passing it here).
+        self.base_url = ""
         self._client = client
         self.max_source_chars = max_source_chars
         # print-shaped narration sink; the caller picks where lines go (the
@@ -87,7 +90,7 @@ class GapAuditor:
     def _client_lazy(self):
         if self._client is None:
             from ..providers import client_for
-            self._client = client_for(self.model)
+            self._client = client_for(self.model, self.base_url)
         return self._client
 
     def _ask(self, source: str, finding: ReviewFinding) -> dict:

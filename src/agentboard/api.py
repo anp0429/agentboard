@@ -40,6 +40,7 @@ from .config import (
 )
 from .fingerprint import verdict_summary
 from .proposal_cache import propose_or_cached
+from .providers import endpoint_label
 from .review import ReviewRun, render_review_html
 from .verifiers.finding_verifier import FindingVerifier
 from .verifiers.harness import harness_for_profile, harness_for_target
@@ -110,6 +111,14 @@ def run_review(request: ReviewRequest, log=print) -> ReviewResult:
         log(str(e))
         return ReviewResult(exit_code=1)
 
+    # Provider pin: a repo's config may set base_url so shell state cannot
+    # silently redefine what a model name means. Ambient env still wins
+    # (an explicit export is a deliberate act); config fills the gap when
+    # the environment says nothing.
+    provider_base = ""
+    if not os.environ.get("OPENAI_BASE_URL", "").strip():
+        provider_base = (cfg.base_url or "").strip()
+
     head = req.head or current_branch(repo)
     base = req.base or cfg.base or (fork_point(repo, head) or "main")
     target = req.target
@@ -140,6 +149,7 @@ def run_review(request: ReviewRequest, log=print) -> ReviewResult:
         repo_root=repo, head=head, base=base, target=target, tests=tests,
         reviewer_model=cfg.reviewer_model, need_critic=need_critic,
         critic_model=cfg.critic_model, worktree=worktree,
+        provider_base_url=provider_base,
     )
     if problems:
         log("agentboard review — cannot start:")
@@ -199,6 +209,8 @@ def run_review(request: ReviewRequest, log=print) -> ReviewResult:
             "above the target)")
     profile = build_profile(repo, cfg, tests, project_dir=project_dir)
     critic = CriticAgent(model=cfg.critic_model, log=log) if need_critic else None
+    if critic is not None:
+        critic.base_url = provider_base
 
     # the set of (target, tests) pairs to review. Default: the one --target.
     # Multi-target (blast radius) appends more pairs; each is reviewed against
@@ -222,6 +234,7 @@ def run_review(request: ReviewRequest, log=print) -> ReviewResult:
     if not req.no_audit:
         audit_model = req.audit_model or cfg.critic_model or cfg.reviewer_model
         auditor = GapAuditor(model=audit_model, log=log)
+        auditor.base_url = provider_base
 
     run = ReviewRun(intent=intent, target=target)
     for tgt, tst_path in pairs:
@@ -232,11 +245,21 @@ def run_review(request: ReviewRequest, log=print) -> ReviewResult:
         reviewer = ReviewerAgent(repo, tgt, tst_path, model=cfg.reviewer_model,
                                  harness_notes=profile.harness_notes,
                                  axis=req.axis, log=log)
+        reviewer.base_url = provider_base
         if req.axis and req.axis != "default":
             log(f"axis: {req.axis} (proposals biased toward "
                 "adversarial/untrusted input; the gate is unchanged)")
-        log(f"proposing for {tgt} (reviewer {cfg.reviewer_model}"
-            + (f" + critic {cfg.critic_model}" if need_critic else "") + ")…")
+        # Name the endpoint, always: a stray OPENAI_BASE_URL redefining what
+        # a model name means has burned enough real sessions that the run
+        # log states where each model's requests actually go.
+        rev_ep = endpoint_label(cfg.reviewer_model, provider_base)
+        crit_part = ""
+        if need_critic:
+            crit_ep = endpoint_label(cfg.critic_model, provider_base)
+            crit_part = f" + critic {cfg.critic_model}" + (
+                f" via {crit_ep}" if crit_ep != rev_ep else "")
+        log(f"proposing for {tgt} (reviewer {cfg.reviewer_model} "
+            f"via {rev_ep}{crit_part})…")
         findings = propose_or_cached(
             reviewer, critic, intent=intent, change=change, source=src,
             tests=tst, fresh=req.fresh, log=log,

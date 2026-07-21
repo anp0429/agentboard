@@ -45,6 +45,10 @@ class Config:
     reviewer_model: str = "gpt-5.5"
     critic_model: str = "gpt-5.5"
     run_critic: bool = True
+    base_url: str = ""                # pin the OpenAI-compatible endpoint for
+                                      # this repo, so shell state cannot
+                                      # silently redefine what a model name
+                                      # means (env still wins when set)
     extra: dict = field(default_factory=dict)
 
 
@@ -88,6 +92,7 @@ def load_config(repo_root: str, config_path: str = "") -> Config:
         reviewer_model=data.get("reviewer_model", "gpt-5.5"),
         critic_model=data.get("critic_model", "gpt-5.5"),
         run_critic=bool(data.get("critic", True)),
+        base_url=data.get("base_url", ""),
         extra=data,
     )
 
@@ -320,6 +325,7 @@ def preflight(
     need_critic: bool,
     critic_model: str,
     worktree: bool = False,
+    provider_base_url: str = "",
 ) -> list[str]:
     """Every check that can fail cheaply, run before any token is spent.
     Returns a list of human-readable problems; empty means go.
@@ -367,11 +373,12 @@ def preflight(
     def _model_needs(m: str) -> str | None:
         """Env key a model requires, or None. Routing rule lives in
         providers.uses_anthropic; this mirrors it. A non-claude model with
-        OPENAI_BASE_URL set is a local/compatible endpoint: no key needed."""
+        a base URL (env or the repo config's base_url pin) is a
+        local/compatible endpoint: no key needed."""
         from .providers import uses_anthropic
         if uses_anthropic(m):
             return "ANTHROPIC_API_KEY"
-        if os.environ.get("OPENAI_BASE_URL", "").strip():
+        if os.environ.get("OPENAI_BASE_URL", "").strip() or provider_base_url:
             return None
         return "OPENAI_API_KEY"
 
@@ -385,6 +392,20 @@ def preflight(
             problems.append(
                 f"missing {k} (needed by the model you selected; for a "
                 "local OpenAI-compatible server, set OPENAI_BASE_URL instead)"
+            )
+
+    # Key-shape truth, learned live: an OpenRouter key (they start sk-or-)
+    # aimed at api.openai.com can only be rejected, five expensive seconds
+    # from now. Say so here, with the fix.
+    if "OPENAI_API_KEY" in keys:
+        key = os.environ.get("OPENAI_API_KEY", "")
+        if key.startswith("sk-or-"):
+            problems.append(
+                "OPENAI_API_KEY looks like an OpenRouter key (sk-or-...) but "
+                "no base URL is set, so requests would go to api.openai.com "
+                "and be rejected. Either export "
+                "OPENAI_BASE_URL=https://openrouter.ai/api/v1 or set your "
+                "real OpenAI key."
             )
 
     for tool in ("node", "npm", "git"):

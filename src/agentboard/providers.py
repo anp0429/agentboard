@@ -29,19 +29,20 @@ def anthropic_client():
     return Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
 
 
-def openai_client():
-    """OpenAI-compatible client. Honors OPENAI_BASE_URL for local servers;
-    a local endpoint that ignores auth still gets a placeholder key because
-    the SDK requires one to construct at all."""
+def openai_client(base_url: str = ""):
+    """OpenAI-compatible client. Precedence: explicit base_url argument
+    (a repo's config pinning its provider), then OPENAI_BASE_URL, then
+    api.openai.com. A local endpoint that ignores auth still gets a
+    placeholder key because the SDK requires one to construct at all."""
     from openai import OpenAI
 
-    base_url = os.environ.get("OPENAI_BASE_URL", "").strip() or None
-    api_key = os.environ.get("OPENAI_API_KEY") or ("local" if base_url else None)
-    return OpenAI(base_url=base_url, api_key=api_key)
+    base = (base_url or os.environ.get("OPENAI_BASE_URL", "")).strip() or None
+    api_key = os.environ.get("OPENAI_API_KEY") or ("local" if base else None)
+    return OpenAI(base_url=base, api_key=api_key)
 
 
-def client_for(model: str):
-    return anthropic_client() if uses_anthropic(model) else openai_client()
+def client_for(model: str, base_url: str = ""):
+    return anthropic_client() if uses_anthropic(model) else openai_client(base_url)
 
 
 def chat_completion(client, **kwargs):
@@ -76,3 +77,22 @@ def chat_completion(client, **kwargs):
             kwargs["max_completion_tokens"] = max(4 * budget, 24000)
             return client.chat.completions.create(**kwargs)
         raise
+
+
+def endpoint_label(model: str, base_url: str = "") -> str:
+    """Human-readable name of the endpoint a model will actually talk to.
+
+    Printed at review start so a stray OPENAI_BASE_URL (a .zshrc that
+    points at a local Ollama, an OpenRouter export left over from another
+    session) is visible in the run log instead of silently redefining what
+    a model name means. Precedence mirrors openai_client: explicit
+    base_url argument, then the environment, then api.openai.com.
+    """
+    if uses_anthropic(model):
+        return "anthropic"
+    base = (base_url or os.environ.get("OPENAI_BASE_URL", "")).strip()
+    if not base:
+        return "api.openai.com"
+    from urllib.parse import urlparse
+
+    return urlparse(base).netloc or base

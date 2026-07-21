@@ -179,6 +179,9 @@ class ReviewerAgent:
         self.target_path = target_path
         self.existing_tests_path = existing_tests_path
         self.model = model
+        # optional provider pin from repo config; ambient env still wins
+        # upstream (api.py resolves precedence before passing it here).
+        self.base_url = ""
         self._client = client
         self.max_chars = max_chars
         # print-shaped narration sink; the caller picks where lines go (the
@@ -203,7 +206,7 @@ class ReviewerAgent:
         if self._client is None:
             from ..providers import client_for
 
-            self._client = client_for(self.model)
+            self._client = client_for(self.model, self.base_url)
         return self._client
 
     def review(self, intent: str, change: str = "") -> list[ReviewFinding]:

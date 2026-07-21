@@ -242,7 +242,18 @@ export OPENAI_API_KEY=sk-or-...
 # .agentboard.toml
 reviewer_model = "qwen3.6:27b"            # or "moonshotai/kimi-k2.6", etc.
 critic_model = "devstral-small-2"         # a different lineage decorrelates
+base_url = "http://localhost:11434/v1"    # optional: pin this repo's endpoint
 ```
+
+Because one environment variable redefines what every model name means,
+the run log always names the endpoint each model will talk to
+(`reviewer qwen3.6:27b via localhost:11434`), so a stray export from
+another session is visible instead of silent. A repo can also pin its
+endpoint with `base_url` in config (an explicitly set `OPENAI_BASE_URL`
+still wins), and preflight rejects the one unambiguous mistake up front:
+an OpenRouter-shaped key (`sk-or-...`) with no base URL set would only be
+refused by api.openai.com, so the run stops in two seconds with the fix
+instead of failing mid-review.
 
 The design absorbs weaker proposers safely: a proposal that does not
 compile or run is scored against the test (`broken_test`), never against
