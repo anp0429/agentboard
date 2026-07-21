@@ -83,7 +83,10 @@ def load_worktree_diff(repo: str, base: str = "HEAD") -> PRDiff:
 
 
 def _split_patch(patch: str) -> tuple[str, str, list[str]]:
-    added, removed, hunks, cur = [], [], [], []
+    added: list[str] = []
+    removed: list[str] = []
+    hunks: list[str] = []
+    cur: list[str] = []
     for line in patch.splitlines():
         if line.startswith("@@"):
             if cur:

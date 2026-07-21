@@ -24,7 +24,6 @@ Structure mirrors reviewer_agent: model call split from pure parsing.
 from __future__ import annotations
 
 import json
-import os
 
 from ..review import ReviewFinding
 

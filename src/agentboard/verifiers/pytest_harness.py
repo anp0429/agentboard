@@ -46,6 +46,7 @@ import os
 import re
 import xml.etree.ElementTree as ET
 
+from ..review import Status
 from .harness import BatchResult, Harness
 
 
@@ -158,7 +159,7 @@ class PytestHarness(Harness):
             return "assertion", first
         return "load_error", first
 
-    def read_verdict(self, out: str) -> tuple[str, str]:
+    def read_verdict(self, out: str) -> tuple[Status, str]:
         if not os.path.isfile(out):
             return "broken_test", "test run produced no junit XML output"
         try:

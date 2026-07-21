@@ -9,8 +9,6 @@ system temp dir; an explicit --board still wins."""
 import os
 import tempfile
 
-from agentboard.cli import main
-
 
 def _parse_review(argv):
     """Parse a review command up to dispatch, capturing the namespace."""

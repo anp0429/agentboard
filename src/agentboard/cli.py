@@ -40,10 +40,9 @@ _BUG = "Math.min(n, hi - 1)"
 _FIX = "Math.min(n, hi)"
 
 # default corpus path for --dataset (bare). Honors AGENTBOARD_DATASET.
-import os as _os
-_DATASET_DEFAULT = _os.environ.get(
+_DATASET_DEFAULT = os.environ.get(
     "AGENTBOARD_DATASET",
-    _os.path.join(_os.path.expanduser("~"), ".agentboard", "dataset.jsonl"),
+    os.path.join(os.path.expanduser("~"), ".agentboard", "dataset.jsonl"),
 )
 
 _BADGE = {

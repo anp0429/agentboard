@@ -40,6 +40,8 @@ import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
+from ..review import Status
+
 
 @dataclass
 class BatchResult:
@@ -101,7 +103,7 @@ class Harness(ABC):
         machine-readable results written to `out`."""
 
     @abstractmethod
-    def read_verdict(self, out: str) -> tuple[str, str]:
+    def read_verdict(self, out: str) -> tuple[Status, str]:
         """One serial run's output file -> (status, observed). The verdict
         priority (assertion > timeout > load error > never-ran) must match
         read_batch's records as consumed by the verifier: serial and batch
@@ -225,9 +227,12 @@ class VitestHarness(Harness):
         # mark the title inside the test(...) opener itself — a naive
         # replace can hit a lookalike (comment, string) elsewhere and
         # leave the real test unmarked -> unattributed -> serial fallback.
+        def _stamp(m: re.Match[str]) -> str:
+            return m.group(1) + mark + " "
+
         code, n = re.subn(
             r"""((?:test|it)\(\s*[`'"])""",
-            lambda m: m.group(1) + mark + " ",
+            _stamp,
             test_code,
             count=1,
         )
@@ -278,7 +283,7 @@ class VitestHarness(Harness):
             return "assertion", first
         return "load_error", first
 
-    def read_verdict(self, out: str) -> tuple[str, str]:
+    def read_verdict(self, out: str) -> tuple[Status, str]:
         if not os.path.isfile(out):
             return "broken_test", "test run produced no JSON output"
         try:

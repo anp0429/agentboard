@@ -262,18 +262,19 @@ class FindingVerifier:
             finding.status = "broken_test"
             finding.observed = self._prep_error
             return finding
-        title = self.harness.test_title(finding.test_code)
+        title = self.harness.test_title(finding.test_code or "")
         if not title:
             finding.status = "broken_test"
             finding.observed = "could not read test name"
             return finding
         injected, err = self.harness.inject(self._pristine_tests or "",
-                                            finding.test_code)
+                                            finding.test_code or "")
         if injected is None:
             finding.status = "broken_test"
             finding.observed = err
             return finding
         repo = self._warm_repo
+        assert repo is not None  # set by _ensure_warm when prep succeeded
         tpath = os.path.join(repo, self.tests_file)
         try:
             # write pristine + THIS finding's test (clean start every time)
@@ -350,15 +351,15 @@ class FindingVerifier:
         content = self._pristine_tests or ""
         marked: dict[int, str] = {}
         for i, f in pending.items():
-            title = self.harness.test_title(f.test_code)
+            title = self.harness.test_title(f.test_code or "")
             if not title:
                 continue  # serial path will report it properly
             mark = self._MARK.format(i=i)
             # The proposal is de-marked first (see _MARK_RE) so it cannot
             # smuggle another finding's mark into its own title; the harness
             # then stamps the gate's own mark into the test opener.
-            code = self.harness.mark_title(self._MARK_RE.sub("", f.test_code),
-                                           mark)
+            code = self.harness.mark_title(
+                self._MARK_RE.sub("", f.test_code or ""), mark)
             if code is None:
                 continue
             injected, _err = self.harness.inject(content, code)
@@ -369,6 +370,7 @@ class FindingVerifier:
             return set(pending)
 
         repo = self._warm_repo
+        assert repo is not None  # set by _ensure_warm when prep succeeded
         tpath = os.path.join(repo, self.tests_file)
         try:
             with open(tpath, "w", encoding="utf-8") as fh:
