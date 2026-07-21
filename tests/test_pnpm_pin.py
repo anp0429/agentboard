@@ -136,3 +136,67 @@ def test_frozen_install_failure_falls_back_with_a_note(tmp_path):
         assert any("retrying with --no-frozen-lockfile" in ln for ln in lines)
     finally:
         v.close()
+
+
+# --- toolchain-manager pins (mise.toml / .tool-versions) ---------------------
+# Found on supabase/mcp: the repo dropped packageManager entirely and pins
+# pnpm in mise.toml ([tools] pnpm = "10") while its pnpm-workspace.yaml uses
+# pnpm-10 fields. Falling back to 9 ran the repo under a pnpm its config was
+# never written for. Rule: packageManager wins when present; otherwise a
+# modern mise/.tool-versions pin is honored; otherwise 9.
+
+
+def test_mise_pin_is_honored_when_package_json_has_no_pin(tmp_path):
+    root = _repo(tmp_path, {"name": "x"})
+    (tmp_path / "mise.toml").write_text('[tools]\nnode = "lts"\npnpm = "10"\n')
+    assert detect_pnpm_version(root) == "10"
+
+
+def test_mise_table_value_is_honored(tmp_path):
+    root = _repo(tmp_path, {"name": "x"})
+    (tmp_path / "mise.toml").write_text('[tools]\npnpm = { version = "10.12.1" }\n')
+    assert detect_pnpm_version(root) == "10.12.1"
+
+
+def test_mise_list_value_takes_first_entry(tmp_path):
+    root = _repo(tmp_path, {"name": "x"})
+    (tmp_path / "mise.toml").write_text('[tools]\npnpm = ["10.4.0", "9.15.0"]\n')
+    assert detect_pnpm_version(root) == "10.4.0"
+
+
+def test_mise_channel_pin_falls_back_to_9(tmp_path):
+    # "latest"/"lts" are moving targets npx can't resolve as pnpm@<v>
+    root = _repo(tmp_path, {"name": "x"})
+    (tmp_path / "mise.toml").write_text('[tools]\npnpm = "latest"\n')
+    assert detect_pnpm_version(root) == "9"
+
+
+def test_mise_ancient_pin_falls_back_to_9(tmp_path):
+    root = _repo(tmp_path, {"name": "x"})
+    (tmp_path / "mise.toml").write_text('[tools]\npnpm = "7"\n')
+    assert detect_pnpm_version(root) == "9"
+
+
+def test_package_manager_pin_beats_mise(tmp_path):
+    root = _repo(tmp_path, {"packageManager": "pnpm@11.9.0"})
+    (tmp_path / "mise.toml").write_text('[tools]\npnpm = "10"\n')
+    assert detect_pnpm_version(root) == "11.9.0"
+
+
+def test_tool_versions_pin_is_honored(tmp_path):
+    root = _repo(tmp_path, {"name": "x"})
+    (tmp_path / ".tool-versions").write_text("node 22.11.0\npnpm 10.12.1\n")
+    assert detect_pnpm_version(root) == "10.12.1"
+
+
+def test_mise_beats_tool_versions(tmp_path):
+    root = _repo(tmp_path, {"name": "x"})
+    (tmp_path / "mise.toml").write_text('[tools]\npnpm = "10"\n')
+    (tmp_path / ".tool-versions").write_text("pnpm 9.1.0\n")
+    assert detect_pnpm_version(root) == "10"
+
+
+def test_broken_mise_toml_falls_back_to_9(tmp_path):
+    root = _repo(tmp_path, {"name": "x"})
+    (tmp_path / "mise.toml").write_text("[tools\npnpm = ")
+    assert detect_pnpm_version(root) == "9"

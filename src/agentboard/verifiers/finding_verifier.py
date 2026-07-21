@@ -40,7 +40,8 @@ import time
 
 from ..review import ReviewFinding, ReviewRun
 from .harness import Harness, VitestHarness
-from .vitest_verifier import RepoProfile, _tail, scrubbed_env, unfrozen_install
+from .vitest_verifier import (RepoProfile, _proc_tail, scrubbed_env,
+                              unfrozen_install)
 
 # Back-compat aliases: the vitest injection rules moved into VitestHarness
 # (harness.py) with their provenance comments; these names stay importable
@@ -211,7 +212,7 @@ class FindingVerifier:
                     inst = self._run(retry, self._workdir(repo))
                 phases.append(f"install {time.monotonic() - t0:.1f}s")
                 if inst.returncode != 0:
-                    self._prep_error = f"install failed: {_tail(inst.stderr or inst.stdout)}"
+                    self._prep_error = f"install failed: {_proc_tail(inst)}"
             except subprocess.TimeoutExpired:
                 self._prep_error = f"install did not finish within {self.timeout}s"
         if not self._prep_error and self.profile.build_cmd:
@@ -220,7 +221,7 @@ class FindingVerifier:
                 bld = self._run(self.profile.build_cmd, self._workdir(repo))
                 phases.append(f"build {time.monotonic() - t0:.1f}s")
                 if bld.returncode != 0:
-                    self._prep_error = f"build failed: {_tail(bld.stderr or bld.stdout)}"
+                    self._prep_error = f"build failed: {_proc_tail(bld)}"
             except subprocess.TimeoutExpired:
                 self._prep_error = f"build did not finish within {self.timeout}s"
         # functional smoke probe: prove the runner starts before judging
@@ -234,7 +235,7 @@ class FindingVerifier:
                 if smoke.returncode != 0:
                     self._prep_error = (
                         "environment smoke probe failed: "
-                        f"{_tail(smoke.stderr or smoke.stdout)}"
+                        f"{_proc_tail(smoke)}"
                     )
             except subprocess.TimeoutExpired:
                 self._prep_error = (

@@ -21,7 +21,7 @@ from ...verifiers.vitest_verifier import (  # noqa: F401 - re-exports for legacy
     RepoProfile,
     SUPABASE_MCP,
     _parse_vitest_json,
-    _tail,
+    _proc_tail,
     scrubbed_env,
     unfrozen_install,
 )
@@ -91,7 +91,7 @@ class VitestVerifier:
         except subprocess.TimeoutExpired:
             return set(), {}, f"install did not finish within {self.timeout}s"
         if inst.returncode != 0:
-            return set(), {}, f"install failed: {_tail(inst.stderr or inst.stdout)}"
+            return set(), {}, f"install failed: {_proc_tail(inst)}"
 
         if self.profile.build_cmd:
             try:
@@ -99,7 +99,7 @@ class VitestVerifier:
             except subprocess.TimeoutExpired:
                 return set(), {}, f"build did not finish within {self.timeout}s"
             if bld.returncode != 0:
-                return set(), {}, f"build failed: {_tail(bld.stderr or bld.stdout)}"
+                return set(), {}, f"build failed: {_proc_tail(bld)}"
 
         out = os.path.join(repo, self._RESULT_FILE)
         cmd = self.profile.test_base + ["--reporter=json", f"--outputFile={out}"]

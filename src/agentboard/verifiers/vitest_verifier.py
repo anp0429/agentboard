@@ -220,6 +220,20 @@ def _tail(s: str, n: int = 300, head: int = 200) -> str:
     return s[:head] + "\n  ...\n" + s[-n:]
 
 
+def _proc_tail(p: "subprocess.CompletedProcess") -> str:
+    """Both streams, labeled — never `stderr or stdout`. That pattern hid a
+    real failure on supabase/mcp: npm printed one harmless warning to stderr
+    ('Unknown env config "store-dir"'), stderr was truthy, and the actual
+    error sat unread in stdout. Same lesson as _tail: the part you drop is
+    the part holding the cause."""
+    parts = []
+    if (p.stderr or "").strip():
+        parts.append("stderr: " + _tail(p.stderr))
+    if (p.stdout or "").strip():
+        parts.append("stdout: " + _tail(p.stdout))
+    return "\n  ".join(parts) or "(no output on either stream)"
+
+
 def _parse_vitest_json(path: str) -> tuple[set[str], dict[str, str], str]:
     """vitest's json reporter is Jest-shaped:
         { testResults: [ { assertionResults: [ {ancestorTitles,title,status,failureMessages} ] } ] }

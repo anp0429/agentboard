@@ -202,6 +202,19 @@ def run_review(request: ReviewRequest, log=print) -> ReviewResult:
         log(f"  - --worktree: no changes between the working tree and "
             f"{req.base or 'HEAD'}. Nothing to review.")
         return ReviewResult(exit_code=1)
+    if worktree and not req.base and target not in change:
+        # The clean-checkout foot-gun (found on supabase/mcp#324): after
+        # `gh pr checkout`, the working tree equals HEAD, so this mode sees a
+        # near-empty diff while the real change sits in commits. The review
+        # still "runs" — proposals come from the intent alone — which looks
+        # like coverage and gates nothing. Abort and name the fix.
+        log("agentboard review — cannot start:")
+        log(f"  - --worktree with no --base diffs the working tree against "
+            f"HEAD, and that diff does not touch {target}.")
+        log("  - If the change is committed (a PR checkout, a feature "
+            "branch), say what to diff against: --base <fork point>, "
+            "e.g. --base origin/main.")
+        return ReviewResult(exit_code=1)
 
     project_dir = detect_project_dir(repo, target)
     if project_dir != ".":

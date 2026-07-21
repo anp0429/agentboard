@@ -208,16 +208,67 @@ def detect_pnpm_version(scan_root: str) -> str:
     or no pin falls back to 9. Found on pathe: pnpm 10/11 repos use
     pnpm-workspace.yaml as a plain config file with no `packages` field,
     which pnpm 9 rejects — so pinning 9 for everyone breaks modern repos the
-    same way ambient pnpm 7 broke Node 22."""
+    same way ambient pnpm 7 broke Node 22.
+
+    The pin also migrates: supabase/mcp dropped packageManager entirely and
+    now pins pnpm in mise.toml ([tools] pnpm = "10"), while its workspace
+    file uses pnpm-10 fields (ignoredBuiltDependencies). Falling back to 9
+    there ran the whole repo under a pnpm its config was never written for.
+    So the search order is: packageManager, mise.toml, .tool-versions, 9."""
+    pin = ""
     try:
         with open(os.path.join(scan_root, "package.json"), encoding="utf-8") as fh:
             pin = str(json.load(fh).get("packageManager", ""))
     except (OSError, ValueError):
-        return "9"
+        pass
     m = re.match(r"pnpm@(\d+)(?:\.(\d+))?(?:\.(\d+))?", pin)
+    if m and int(m.group(1)) >= 9:
+        return ".".join(p for p in m.groups() if p is not None)
+    if not m:  # no packageManager pin — check toolchain managers
+        v = _pnpm_from_mise(scan_root) or _pnpm_from_tool_versions(scan_root)
+        if v:
+            return v
+    return "9"
+
+
+def _pnpm_pin_ok(raw: str) -> str:
+    """Normalize a toolchain-manager pin to an npx-usable version, or ''.
+    Non-numeric channels ("latest", "lts") and ancient pins are rejected —
+    the fallback of 9 handles those."""
+    m = re.match(r"(\d+)(?:\.(\d+))?(?:\.(\d+))?$", raw.strip())
     if not m or int(m.group(1)) < 9:
-        return "9"
+        return ""
     return ".".join(p for p in m.groups() if p is not None)
+
+
+def _pnpm_from_mise(scan_root: str) -> str:
+    """pnpm pin from mise.toml's [tools] table. Values can be a bare string,
+    a {version = ...} table, or a list (first entry wins, per mise docs)."""
+    try:
+        import tomllib
+        with open(os.path.join(scan_root, "mise.toml"), "rb") as fh:
+            tools = tomllib.load(fh).get("tools", {})
+    except (OSError, ValueError):
+        return ""
+    raw = tools.get("pnpm", "")
+    if isinstance(raw, dict):
+        raw = raw.get("version", "")
+    if isinstance(raw, list):
+        raw = raw[0] if raw else ""
+    return _pnpm_pin_ok(str(raw))
+
+
+def _pnpm_from_tool_versions(scan_root: str) -> str:
+    """pnpm pin from an asdf/mise .tool-versions file ("pnpm 10.12.1")."""
+    try:
+        with open(os.path.join(scan_root, ".tool-versions"), encoding="utf-8") as fh:
+            for line in fh:
+                parts = line.split("#", 1)[0].split()
+                if len(parts) >= 2 and parts[0] == "pnpm":
+                    return _pnpm_pin_ok(parts[1])
+    except OSError:
+        pass
+    return ""
 
 
 def build_profile(repo_root: str, cfg: Config, tests_file: str,
