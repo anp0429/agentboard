@@ -208,8 +208,6 @@ def test_inject_strips_multiline_imports():
     assert err == ""
     assert "vitest" not in out
     assert 'test("new"' in out
-# Append the body of this file to tests/test_sandbox_trust.py, next to the
-# existing injection-placement tests (the zod-lesson section).
 
 
 def test_inject_into_semicolonless_describe_file():

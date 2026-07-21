@@ -32,6 +32,10 @@ Install (Python 3.11+):
 pip install reviewgate
 ```
 
+The package is `reviewgate` and the command is `agentboard`: the project is
+named agentboard, but that name was already taken on PyPI, so the package
+ships under the gate's job description instead.
+
 Or from source for development: `pip install -e ".[dev]"`.
 
 The demo runs without an API key:
@@ -333,6 +337,13 @@ verdict-identical by fingerprint.
 
 ## Limitations
 
+- The execution trust model: reviewing a repo runs that repo's code as you.
+  The gate copies the repo to a throwaway temp dir, but the install step
+  executes the repo's dependency lifecycle scripts and the tests run with
+  your OS user, your network, and your environment (minus the two model
+  provider keys, which are scrubbed). There is no container or VM boundary
+  yet. Only review repos you would be comfortable running `npm install` in.
+  Stronger isolation is on the roadmap.
 - Proposal coverage is a sampling process. The proposer reaches the topic
   reliably but samples which edge cases; repeated runs find overlapping but
   not identical sets.
