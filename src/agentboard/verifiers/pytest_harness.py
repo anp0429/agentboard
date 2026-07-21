@@ -169,12 +169,21 @@ class PytestHarness(Harness):
         failed_assertion = None
         load_error = None
         timeout_msg = None
+        skipped_msg = None
         ran = 0
         for tc in root.iter("testcase"):
             status, fm = self._case(tc)
             if status == "error":
                 # collection failure / setup error: the test never ran
                 load_error = fm.strip().splitlines()[0][:200] if fm.strip() else ""
+                continue
+            if status == "skipped":
+                # A skipped injected test verified nothing. The verdict is
+                # broken_test either way (skipping can never mint a gap),
+                # but say what actually happened: the first self-review run
+                # flagged the old "name match failed" message as misleading
+                # for this case.
+                skipped_msg = fm.strip().splitlines()[0][:200] if fm.strip() else ""
                 continue
             if status in ("passed", "failed"):
                 ran += 1
@@ -195,6 +204,10 @@ class PytestHarness(Harness):
         if load_error:
             return "broken_test", load_error
         if ran == 0:
+            if skipped_msg is not None:
+                return ("broken_test",
+                        "injected test was skipped, nothing verified"
+                        + (": " + skipped_msg if skipped_msg else ""))
             return "broken_test", "injected test did not run (name match failed)"
         return "handled", "test passed — the tool already does this"
 

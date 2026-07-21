@@ -393,3 +393,30 @@ def test_build_profile_python_shape(tmp_path):
     assert prof.build_cmd is None
     assert prof.test_base == [sys.executable, "-m", "pytest"]
     assert prof.smoke_cmd[-3:] == ["--collect-only", "-q", "tests/test_x.py"]
+
+
+def test_verdict_skipped_says_skipped_not_name_match(tmp_path):
+    # Found by the first self-review run: a skipped injected test used to
+    # report "did not run (name match failed)", which is the wrong story.
+    # The verdict stays broken_test (a skip can never mint a gap); the
+    # message now says what happened.
+    out = _write_xml(
+        tmp_path,
+        '<testcase classname="t" name="test_x">'
+        '<skipped message="unconditional skip"/></testcase>',
+    )
+    status, msg = H.read_verdict(out)
+    assert status == "broken_test"
+    assert "skipped" in msg
+    assert "unconditional skip" in msg
+    assert "name match failed" not in msg
+
+
+def test_verdict_skipped_with_no_message_still_says_skipped(tmp_path):
+    out = _write_xml(
+        tmp_path,
+        '<testcase classname="t" name="test_x"><skipped/></testcase>',
+    )
+    status, msg = H.read_verdict(out)
+    assert status == "broken_test"
+    assert "skipped" in msg
