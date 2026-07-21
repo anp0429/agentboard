@@ -217,6 +217,9 @@ def build_profile(repo_root: str, cfg: Config, tests_file: str,
             os.path.basename(repo_root.rstrip("/")),
             filter=cfg.filter, project=project, build=cfg.build,
             pnpm_version=detect_pnpm_version(scan_root),
+            # honor the repo's pinned dependency set when it ships one; the
+            # verifier retries unfrozen (with a note) if the pin is stale
+            frozen=os.path.isfile(os.path.join(scan_root, "pnpm-lock.yaml")),
         )
     if cfg.harness_notes:
         prof.harness_notes = cfg.harness_notes.strip()

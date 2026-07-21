@@ -67,3 +67,72 @@ def test_build_profile_default_is_unchanged(tmp_path):
     root = _repo(tmp_path, {"name": "plain"})
     prof = build_profile(root, Config(), tests_file="x.test.ts")
     assert "pnpm@9" in " ".join(prof.install_cmd)
+
+
+# ---------------------------------------------------------------------------
+# lockfile honesty: a shipped lockfile is installed frozen, drift is loud
+# ---------------------------------------------------------------------------
+
+def test_lockfile_repo_installs_frozen(tmp_path):
+    # A repo that ships pnpm-lock.yaml gets the dependency set it pins;
+    # --no-frozen-lockfile silently resolved whatever the registry served
+    # that day, so verdicts could drift with upstream releases.
+    root = _repo(tmp_path, {"name": "x"})
+    prof = build_profile(root, Config(), tests_file="x.test.ts")
+    assert "--frozen-lockfile" in prof.install_cmd
+    assert "--no-frozen-lockfile" not in prof.install_cmd
+
+
+def test_no_lockfile_repo_installs_unfrozen(tmp_path):
+    root = _repo(tmp_path, {"name": "x"}, lockfile=False)
+    prof = build_profile(root, Config(), tests_file="x.test.ts")
+    assert "--no-frozen-lockfile" in prof.install_cmd
+
+
+def test_unfrozen_install_swaps_only_the_flag():
+    from agentboard.verifiers.vitest_verifier import unfrozen_install
+
+    frozen = ["npx", "-y", "pnpm@9", "install", "--frozen-lockfile"]
+    assert unfrozen_install(frozen) == [
+        "npx", "-y", "pnpm@9", "install", "--no-frozen-lockfile"]
+    # nothing to fall back to when the install was never frozen
+    assert unfrozen_install(["npm", "ci"]) is None
+    assert unfrozen_install(["npx", "-y", "pnpm@9", "install",
+                             "--no-frozen-lockfile"]) is None
+
+
+def test_frozen_install_failure_falls_back_with_a_note(tmp_path):
+    # A stale lockfile must degrade the run to the permissive install (with
+    # one printed line saying so), never bench it as an env failure.
+    import subprocess
+
+    from agentboard.verifiers.finding_verifier import FindingVerifier
+    from agentboard.verifiers.vitest_verifier import RepoProfile
+
+    repo = str(tmp_path / "repo")
+    os.makedirs(os.path.join(repo, "tests"))
+    with open(os.path.join(repo, "tests", "suite.test.ts"), "w") as fh:
+        fh.write("describe('d', () => {\n});\n")
+    profile = RepoProfile(
+        name="fixture",
+        install_cmd=["pnpm", "install", "--frozen-lockfile"],
+        test_base=["true"], build_cmd=None, env={}, smoke_cmd=None,
+    )
+    calls, lines = [], []
+    v = FindingVerifier(repo, profile, "tests/suite.test.ts", log=lines.append)
+
+    def fake_run(args, cwd):
+        calls.append(list(args))
+        rc = 1 if "--frozen-lockfile" in args else 0
+        return subprocess.CompletedProcess(
+            args, rc, stdout="", stderr="ERR_PNPM_OUTDATED_LOCKFILE")
+
+    v._run = fake_run
+    try:
+        v._ensure_warm()
+        assert v._prep_error == ""
+        assert calls[0] == ["pnpm", "install", "--frozen-lockfile"]
+        assert calls[1] == ["pnpm", "install", "--no-frozen-lockfile"]
+        assert any("retrying with --no-frozen-lockfile" in ln for ln in lines)
+    finally:
+        v.close()

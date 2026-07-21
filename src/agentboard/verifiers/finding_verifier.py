@@ -35,7 +35,7 @@ import tempfile
 import time
 
 from ..review import ReviewFinding, ReviewRun
-from .vitest_verifier import RepoProfile, _tail, scrubbed_env
+from .vitest_verifier import RepoProfile, _tail, scrubbed_env, unfrozen_install
 
 
 def _inject(pristine: str, test_code: str) -> tuple[str | None, str]:
@@ -255,6 +255,13 @@ class FindingVerifier:
         t0 = time.monotonic()
         try:
             inst = self._run(self.profile.install_cmd, self._workdir(repo))
+            retry = unfrozen_install(self.profile.install_cmd)
+            if inst.returncode != 0 and retry is not None:
+                # stale lockfile, most likely — degrade to the permissive
+                # install rather than benching the run, but say so out loud.
+                self.log("  install: frozen lockfile install failed; "
+                         "retrying with --no-frozen-lockfile")
+                inst = self._run(retry, self._workdir(repo))
             phases.append(f"install {time.monotonic() - t0:.1f}s")
             if inst.returncode != 0:
                 self._prep_error = f"install failed: {_tail(inst.stderr or inst.stdout)}"

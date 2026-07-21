@@ -82,6 +82,18 @@ def scrubbed_env(profile_env: dict[str, str]) -> dict[str, str]:
     return env
 
 
+def unfrozen_install(install_cmd: list[str]) -> list[str] | None:
+    """The retry command for a failed frozen install: same command with
+    --frozen-lockfile swapped for --no-frozen-lockfile. None when the
+    install was not frozen (nothing to fall back to). The fallback exists
+    because a frozen install fails on a merely stale lockfile, and a stale
+    lockfile must degrade the run (with a printed note), not kill it."""
+    if "--frozen-lockfile" not in install_cmd:
+        return None
+    return ["--no-frozen-lockfile" if a == "--frozen-lockfile" else a
+            for a in install_cmd]
+
+
 # --- the explicit, per-repo facts the verifier cannot guess -----------------
 
 @dataclass
@@ -123,6 +135,7 @@ class RepoProfile:
         extra_test_args: list[str] | None = None,
         env: dict[str, str] | None = None,
         pnpm_version: str = "9",
+        frozen: bool = False,
     ) -> "RepoProfile":
         # Every pnpm invocation goes through an explicitly versioned pnpm via
         # npx — never the ambient corepack shim. The version is the repo's own
@@ -142,9 +155,18 @@ class RepoProfile:
         if project:
             test += ["--project", project]
         test += extra_test_args or []
+        # frozen=True (set by build_profile when pnpm-lock.yaml exists): the
+        # sandbox installs exactly the dependency set the repo pins, instead
+        # of --no-frozen-lockfile silently resolving whatever the registry
+        # serves that day — verdicts must not drift with upstream releases.
+        # A stale lockfile is not a dead end: the verifiers retry unfrozen
+        # with a printed note (see unfrozen_install). No lockfile keeps the
+        # permissive install, the only one that can work.
         return cls(
             name=name,
-            install_cmd=pnpm + ["install", "--no-frozen-lockfile"],
+            install_cmd=pnpm + ["install",
+                                "--frozen-lockfile" if frozen
+                                else "--no-frozen-lockfile"],
             build_cmd=pnpm + ["-r", "build"] if build else None,
             test_base=test,
             env={"CI": "true", **(env or {})},
@@ -230,6 +252,13 @@ class VitestVerifier:
         # exit — TimeoutExpired must never escape as a traceback mid-review.
         try:
             inst = self._run(self.profile.install_cmd, repo)
+            retry = unfrozen_install(self.profile.install_cmd)
+            if inst.returncode != 0 and retry is not None:
+                # stale lockfile, most likely — degrade to the permissive
+                # install rather than benching the run, but say so out loud.
+                print("  install: frozen lockfile install failed; "
+                      "retrying with --no-frozen-lockfile")
+                inst = self._run(retry, repo)
         except subprocess.TimeoutExpired:
             return set(), {}, f"install did not finish within {self.timeout}s"
         if inst.returncode != 0:
