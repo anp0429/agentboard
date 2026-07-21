@@ -29,6 +29,7 @@ from .agents.critic_agent import CriticAgent
 from .agents.gap_auditor import GapAuditor
 from .agents.reviewer_agent import ReviewerAgent
 from .config import (
+    ConfigError,
     build_profile,
     current_branch,
     detect_project_dir,
@@ -100,7 +101,13 @@ def run_review(request: ReviewRequest, log=print) -> ReviewResult:
     All narration goes through `log` (print-shaped)."""
     req = request
     repo = os.path.abspath(os.path.expanduser(req.repo))
-    cfg = load_config(repo, req.config)
+    try:
+        cfg = load_config(repo, req.config)
+    except ConfigError as e:
+        # the same friendly one-liner the old SystemExit carried, but as an
+        # ordinary could-not-run exit: no adapter's process dies over a typo.
+        log(str(e))
+        return ReviewResult(exit_code=1)
 
     head = req.head or current_branch(repo)
     base = req.base or cfg.base or (fork_point(repo, head) or "main")

@@ -24,6 +24,16 @@ from .verifiers.vitest_verifier import RepoProfile
 CONFIG_NAME = ".agentboard.toml"
 
 
+class ConfigError(ValueError):
+    """A config problem the user must fix (e.g. a bad --config path).
+
+    Deliberately an Exception subclass, unlike the SystemExit this replaced:
+    SystemExit sails straight through `except Exception` at the adapter
+    boundaries, so a typo'd --config could kill a long-lived MCP server
+    instead of failing one call. The friendly message and exit code 1 are
+    the api boundary's job (api.run_review), not this module's."""
+
+
 @dataclass
 class Config:
     profile_kind: str = ""            # "pnpm-vitest" | "npm-vitest" | "" (autodetect)
@@ -59,7 +69,7 @@ def load_config(repo_root: str, config_path: str = "") -> Config:
     if config_path:
         path = os.path.expanduser(config_path)
         if not os.path.isfile(path):
-            raise SystemExit("--config " + config_path + ": file not found")
+            raise ConfigError("--config " + config_path + ": file not found")
     else:
         path = os.path.join(repo_root, CONFIG_NAME)
         if not os.path.isfile(path):
