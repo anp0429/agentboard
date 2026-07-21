@@ -226,18 +226,29 @@ class VitestVerifier:
         (install/build blew up, or vitest never wrote JSON) — that's an
         infrastructure failure, distinct from a test failure.
         """
-        inst = self._run(self.profile.install_cmd, repo)
+        # a hang in any phase is the same infrastructure failure as a nonzero
+        # exit — TimeoutExpired must never escape as a traceback mid-review.
+        try:
+            inst = self._run(self.profile.install_cmd, repo)
+        except subprocess.TimeoutExpired:
+            return set(), {}, f"install did not finish within {self.timeout}s"
         if inst.returncode != 0:
             return set(), {}, f"install failed: {_tail(inst.stderr or inst.stdout)}"
 
         if self.profile.build_cmd:
-            bld = self._run(self.profile.build_cmd, repo)
+            try:
+                bld = self._run(self.profile.build_cmd, repo)
+            except subprocess.TimeoutExpired:
+                return set(), {}, f"build did not finish within {self.timeout}s"
             if bld.returncode != 0:
                 return set(), {}, f"build failed: {_tail(bld.stderr or bld.stdout)}"
 
         out = os.path.join(repo, self._RESULT_FILE)
         cmd = self.profile.test_base + ["--reporter=json", f"--outputFile={out}"]
-        self._run(cmd, repo)  # non-zero exit is normal when tests fail; we read JSON
+        try:
+            self._run(cmd, repo)  # non-zero exit is normal when tests fail; we read JSON
+        except subprocess.TimeoutExpired:
+            return set(), {}, f"test run did not finish within {self.timeout}s"
 
         if not os.path.isfile(out):
             return set(), {}, "test run produced no JSON output"

@@ -249,18 +249,26 @@ class FindingVerifier:
             return
         with open(tpath, encoding="utf-8") as f:
             self._pristine_tests = f.read()
-        # install + build ONCE
+        # install + build ONCE. A hang here is the same loud prep-error as a
+        # nonzero exit — the smoke probe below always caught TimeoutExpired,
+        # but install/build let it escape as a traceback through the run.
         t0 = time.monotonic()
-        inst = self._run(self.profile.install_cmd, self._workdir(repo))
-        phases.append(f"install {time.monotonic() - t0:.1f}s")
-        if inst.returncode != 0:
-            self._prep_error = f"install failed: {_tail(inst.stderr or inst.stdout)}"
-        elif self.profile.build_cmd:
+        try:
+            inst = self._run(self.profile.install_cmd, self._workdir(repo))
+            phases.append(f"install {time.monotonic() - t0:.1f}s")
+            if inst.returncode != 0:
+                self._prep_error = f"install failed: {_tail(inst.stderr or inst.stdout)}"
+        except subprocess.TimeoutExpired:
+            self._prep_error = f"install did not finish within {self.timeout}s"
+        if not self._prep_error and self.profile.build_cmd:
             t0 = time.monotonic()
-            bld = self._run(self.profile.build_cmd, self._workdir(repo))
-            phases.append(f"build {time.monotonic() - t0:.1f}s")
-            if bld.returncode != 0:
-                self._prep_error = f"build failed: {_tail(bld.stderr or bld.stdout)}"
+            try:
+                bld = self._run(self.profile.build_cmd, self._workdir(repo))
+                phases.append(f"build {time.monotonic() - t0:.1f}s")
+                if bld.returncode != 0:
+                    self._prep_error = f"build failed: {_tail(bld.stderr or bld.stdout)}"
+            except subprocess.TimeoutExpired:
+                self._prep_error = f"build did not finish within {self.timeout}s"
         # functional smoke probe: prove the runner starts before judging
         # anything. An exit code can lie across toolchain versions; a probe
         # that actually launches the runner cannot.
