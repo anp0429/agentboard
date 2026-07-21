@@ -42,3 +42,28 @@ def openai_client():
 
 def client_for(model: str):
     return anthropic_client() if uses_anthropic(model) else openai_client()
+
+
+def chat_completion(client, **kwargs):
+    """client.chat.completions.create with the max-tokens rename absorbed.
+
+    OpenAI renamed max_tokens to max_completion_tokens for its current
+    models and rejects the old name with a 400. OpenAI-COMPATIBLE servers
+    (Ollama, OpenRouter, vLLM) still speak max_tokens and may not know the
+    new name. Same lesson as uses_anthropic: encode the rule, not a vendor
+    list. Send the widely-understood name; on the one specific rejection,
+    retry once with the new name. Found live: the first-ever review run
+    against real api.openai.com (gpt-5.5) failed with exactly this 400
+    while every prior run had gone through compatible endpoints.
+    """
+    try:
+        return client.chat.completions.create(**kwargs)
+    except Exception as e:
+        message = str(e)
+        if ("max_tokens" in kwargs
+                and "max_tokens" in message
+                and "max_completion_tokens" in message):
+            kwargs = dict(kwargs)
+            kwargs["max_completion_tokens"] = kwargs.pop("max_tokens")
+            return client.chat.completions.create(**kwargs)
+        raise

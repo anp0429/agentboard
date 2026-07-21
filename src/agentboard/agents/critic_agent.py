@@ -23,6 +23,8 @@ Structure mirrors reviewer_agent: model call split from pure parsing.
 
 from __future__ import annotations
 
+from ..providers import chat_completion
+
 import json
 
 from ..review import ReviewFinding
@@ -146,7 +148,8 @@ class CriticAgent:
         try:
             client = self._client_lazy()
             if self._is_openai:
-                resp = client.chat.completions.create(
+                resp = chat_completion(
+                    client,
                     model=self.model,
                     response_format={"type": "json_object"},
                     # a JSON plan never needs the model's full output ceiling;
