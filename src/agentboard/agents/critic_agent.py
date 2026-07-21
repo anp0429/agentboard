@@ -116,11 +116,15 @@ def _coverage_digest(prior: list[ReviewFinding]) -> str:
 
 class CriticAgent:
     def __init__(
-        self, model: str = "claude-opus-4-8", client=None, max_tokens: int = 3000
+        self, model: str = "claude-opus-4-8", client=None, max_tokens: int = 3000,
+        log=print,
     ):
         self.model = model
         self._client = client
         self.max_tokens = max_tokens
+        # print-shaped narration sink; the caller picks where lines go (the
+        # CLI passes print, the MCP server a per-call buffer). See api.py.
+        self.log = log
         from ..providers import uses_anthropic
         self._is_openai = not uses_anthropic(model)
 
@@ -170,6 +174,6 @@ class CriticAgent:
                 )
                 data = _loads_gaps_lenient(text)
         except Exception as ex:  # never crash the loop
-            print(f"  [warn] critic: {ex}")
+            self.log(f"  [warn] critic: {ex}")
             return []
         return parse_gaps(data)

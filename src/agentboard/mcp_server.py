@@ -1,11 +1,11 @@
 """MCP adapter — agentboard as a tool a coding agent can call.
 
 The engine's machine boundary is the schema_version-1 JSON artifact
-(cli._write_json_out). This server is a THIN adapter over that boundary,
-exactly like the GitHub Action: it builds the same argparse namespace the
-CLI would, runs the same review() path, and returns the parsed artifact.
-No review logic lives here; if the CLI and the MCP server can disagree,
-one of them is wrong.
+(api._write_json_out). This server is a THIN adapter over that boundary,
+exactly like the GitHub Action: it builds the same ReviewRequest the CLI
+builds from its parsed flags, runs the same api.run_review pipeline, and
+returns the parsed artifact. No review logic lives here; if the CLI and
+the MCP server can disagree, one of them is wrong.
 
 Design positions, same as everywhere else in this codebase:
 
@@ -13,9 +13,11 @@ Design positions, same as everywhere else in this codebase:
   confirmed gaps. The calling agent (and ultimately a human) decides what a
   gap means. Errors are for "the review could not run", never "the code is
   bad".
-* stdout belongs to the MCP protocol. The CLI narrates to stdout; every
-  byte of that narration is captured and returned in the artifact's `log`
-  field instead, because a stray print() on stdio IS protocol corruption.
+* stdout belongs to the MCP protocol. The pipeline narrates through an
+  injected log sink (api.run_review's `log`); every line is collected into
+  a per-call buffer and returned in the artifact's `log` field, because a
+  stray print() on stdio IS protocol corruption. No global stdout redirect:
+  two concurrent calls cannot cross-contaminate each other's narration.
 * Worktree by default. An agent calling this mid-session has dirty,
   uncommitted edits — that is the thing it wants gated. `worktree=False`
   restores the CLI's refs mode (head vs base).
@@ -29,12 +31,12 @@ Run: `agentboard-mcp` (stdio). Requires the `mcp` extra:
 
 from __future__ import annotations
 
-import argparse
-import contextlib
 import io
 import json
 import os
 import tempfile
+
+from .api import ReviewRequest, run_review
 
 try:
     from mcp.server.fastmcp import FastMCP
@@ -58,47 +60,44 @@ INSTRUCTIONS = (
 mcp = FastMCP("agentboard", instructions=INSTRUCTIONS)
 
 
-def _review_args(**overrides) -> argparse.Namespace:
-    """The full namespace cli.review() reads, with CLI-parser defaults.
-    Kept in one place so a new CLI flag fails loudly here (AttributeError in
-    tests) instead of silently diverging between the two adapters."""
-    ns = argparse.Namespace(
-        repo=".", config="", target="", tests="", head="", base="", intent="",
-        issue="", no_critic=False, audit_model="", no_audit=False, fresh=False,
-        timeout=1800, also=[], scope="", depth=2, max_files=20, yes=False,
-        axis="default", worktree=True, board="", json_out="", dataset=None,
-    )
-    for k, v in overrides.items():
-        setattr(ns, k, v)
-    return ns
+def _review_request(**overrides) -> ReviewRequest:
+    """The request api.run_review reads, with the adapter's one deliberate
+    default flip: worktree=True (an agent gates its dirty edits). An unknown
+    field name fails loudly here (TypeError) instead of silently diverging
+    between the two adapters; the parity test in tests/test_mcp_server.py
+    keeps ReviewRequest itself in lockstep with the CLI parser."""
+    overrides.setdefault("worktree", True)
+    return ReviewRequest(**overrides)
 
 
-def _run_review(ns: argparse.Namespace) -> dict:
-    """Run cli.review() with stdout captured, return the parsed artifact.
+def _run_review(request: ReviewRequest) -> dict:
+    """Run api.run_review with a per-call log sink, return the parsed artifact.
 
     The artifact (schema_version 1) is the single source of truth; the
-    captured narration rides along as `log` so a calling agent can show a
+    collected narration rides along as `log` so a calling agent can show a
     human WHY a run failed without the server ever printing to stdout."""
-    from .cli import review as cli_review
-
     tmpdir = tempfile.mkdtemp(prefix="agentboard-mcp-")
-    ns.json_out = os.path.join(tmpdir, "run.json")
-    if not ns.board:
-        ns.board = os.path.join(tmpdir, "review_board.html")
+    request.json_out = os.path.join(tmpdir, "run.json")
+    if not request.board:
+        request.board = os.path.join(tmpdir, "review_board.html")
 
     buf = io.StringIO()
+
+    def log(*args, **kwargs):  # print-shaped, but into this call's buffer
+        kwargs.setdefault("file", buf)
+        print(*args, **kwargs)
+
     try:
-        with contextlib.redirect_stdout(buf):
-            rc = cli_review(ns)
+        result = run_review(request, log=log)
     except Exception as e:  # noqa: BLE001 - adapter boundary: report, don't crash the server
         return {"error": f"review crashed: {e}", "log": buf.getvalue()}
 
-    log = buf.getvalue()
-    if rc != 0 or not os.path.isfile(ns.json_out):
-        return {"error": "review could not run (see log)", "log": log}
-    with open(ns.json_out, encoding="utf-8") as fh:
+    narration = buf.getvalue()
+    if result.exit_code != 0 or not os.path.isfile(request.json_out):
+        return {"error": "review could not run (see log)", "log": narration}
+    with open(request.json_out, encoding="utf-8") as fh:
         doc = json.load(fh)
-    doc["log"] = log
+    doc["log"] = narration
     return doc
 
 
@@ -148,12 +147,12 @@ def review(
         fresh: resample proposals instead of using the cache.
         timeout: per-gate timeout in seconds.
     """
-    ns = _review_args(
+    req = _review_request(
         repo=repo, target=target, intent=intent, tests=tests, base=base,
         head=head, worktree=worktree, axis=axis, no_audit=no_audit,
         fresh=fresh, timeout=timeout,
     )
-    return _run_review(ns)
+    return _run_review(req)
 
 
 def main() -> None:

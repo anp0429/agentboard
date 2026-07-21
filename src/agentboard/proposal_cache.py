@@ -114,10 +114,12 @@ def propose_or_cached(
     source: str,
     tests: str,
     fresh: bool = False,
+    log=print,
 ) -> list[ReviewFinding]:
     """The propose phase with caching: reviewer (+ critic if given), reused
-    when every input byte matches a prior run. Prints what it did — a silent
-    cache would hide the sampling decision from the human."""
+    when every input byte matches a prior run. Narrates what it did through
+    `log` (print-shaped) — a silent cache would hide the sampling decision
+    from the human."""
     fresh = fresh or os.environ.get("AGENTBOARD_FRESH") == "1"
     key = proposal_key(
         intent=intent,
@@ -133,7 +135,7 @@ def propose_or_cached(
     if not fresh:
         cached = load(key)
         if cached is not None:
-            print(
+            log(
                 f"  proposals: cache hit ({key[:12]}) — {len(cached)} "
                 f"behavior(s), 0 tokens. AGENTBOARD_FRESH=1 to resample."
             )
@@ -148,8 +150,8 @@ def propose_or_cached(
         # Caching it would make the outage permanent: every later run with the
         # same inputs would hit the empty entry and report 0 behaviors without
         # ever retrying the model. Failures are not coverage; never cache them.
-        print(f"  proposals: 0 behaviors sampled — not cached ({key[:12]})")
+        log(f"  proposals: 0 behaviors sampled — not cached ({key[:12]})")
         return findings
     save(key, findings)
-    print(f"  proposals: sampled fresh, cached as {key[:12]}")
+    log(f"  proposals: sampled fresh, cached as {key[:12]}")
     return findings

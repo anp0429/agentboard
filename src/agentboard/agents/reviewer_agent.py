@@ -171,6 +171,7 @@ class ReviewerAgent:
         max_chars: int = 12000,
         harness_notes: str = "",
         axis: str = "default",
+        log=print,
     ):
         self.repo_root = repo_root
         self.target_path = target_path
@@ -178,6 +179,9 @@ class ReviewerAgent:
         self.model = model
         self._client = client
         self.max_chars = max_chars
+        # print-shaped narration sink; the caller picks where lines go (the
+        # CLI passes print, the MCP server a per-call buffer). See api.py.
+        self.log = log
         # Repo-specific test-writing rules (e.g. RepoProfile.harness_notes).
         # Injected into the prompt as data; the prompt stays repo-agnostic.
         self.harness_notes = harness_notes.strip()
@@ -251,6 +255,6 @@ class ReviewerAgent:
                 )
                 data = _loads_lenient(text)
         except Exception as e:  # never crash the loop
-            print(f"  [warn] reviewer: {e}")
+            self.log(f"  [warn] reviewer: {e}")
             return []
         return parse_review_plan(data)

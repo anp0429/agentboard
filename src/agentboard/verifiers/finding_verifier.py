@@ -175,8 +175,12 @@ class FindingVerifier:
         timeout: int = 1800,
         reuse_warm: bool = False,
         project_dir: str = ".",
+        log=print,
     ):
         self.repo_root = repo_root
+        # print-shaped narration sink; the caller picks where lines go (the
+        # CLI passes print, the MCP server a per-call buffer). See api.py.
+        self.log = log
         # Repo-relative dir the JS toolchain runs in. The warm copy is still
         # the whole repo (tests_file and the result file stay repo-relative),
         # but install/build/smoke/test all execute HERE, so a package nested
@@ -274,7 +278,7 @@ class FindingVerifier:
                 self._prep_error = (
                     f"environment smoke probe did not finish within {self.timeout}s"
                 )
-        print("  warm base: " + ", ".join(phases))
+        self.log("  warm base: " + ", ".join(phases))
         self._warm_repo = repo
 
     def close(self) -> None:
@@ -567,7 +571,7 @@ class FindingVerifier:
                 eligible = sum(
                     1 for f in review.findings if not f.covered_by_existing
                 )
-                print(
+                self.log(
                     f"  gate: batch {t_batch:.1f}s"
                     + (
                         f" + serial fallback {t_serial:.1f}s for "

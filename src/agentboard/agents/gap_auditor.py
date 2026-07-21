@@ -72,10 +72,14 @@ def _loads_one(text: str) -> dict:
 
 
 class GapAuditor:
-    def __init__(self, model: str = "gpt-5.5", client=None, max_source_chars: int = 16000):
+    def __init__(self, model: str = "gpt-5.5", client=None, max_source_chars: int = 16000,
+                 log=print):
         self.model = model
         self._client = client
         self.max_source_chars = max_source_chars
+        # print-shaped narration sink; the caller picks where lines go (the
+        # CLI passes print, the MCP server a per-call buffer). See api.py.
+        self.log = log
         from ..providers import uses_anthropic
         self._is_openai = not uses_anthropic(model)
 
@@ -138,12 +142,12 @@ class GapAuditor:
         except KeyError as e:  # missing API key — make it LOUD, not a silent skip
             finding.audit = "not_audited"
             finding.audit_reason = f"auditor could not run: missing {e} — gap is UNVERIFIED"
-            print(f"  [AUDITOR DID NOT RUN] missing {e}; gaps are unverified")
+            self.log(f"  [AUDITOR DID NOT RUN] missing {e}; gaps are unverified")
             return finding
         except Exception as e:
             finding.audit = "not_audited"
             finding.audit_reason = f"auditor error: {e} — gap is UNVERIFIED"
-            print(f"  [warn] auditor: {e}")
+            self.log(f"  [warn] auditor: {e}")
             return finding
         assessment = data.get("assessment", "uncertain")
         if assessment not in ("likely_real", "likely_false_positive", "uncertain"):
