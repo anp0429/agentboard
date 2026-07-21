@@ -9,6 +9,7 @@ This matters most in CI, where the review step necessarily holds the key and
 the checked-out PR code (plus generated tests) runs one step later.
 """
 
+import os
 import subprocess
 import sys
 
@@ -59,3 +60,39 @@ def test_both_verifiers_route_through_scrubbed_env():
         src = inspect.getsource(cls._run)
         assert "scrubbed_env" in src, f"{cls.__name__}._run bypasses scrubbed_env"
         assert "os.environ" not in src, f"{cls.__name__}._run rebuilds env directly"
+        assert "cache_root=" in src, f"{cls.__name__}._run skips cache isolation"
+
+
+def test_cache_root_isolates_package_manager_caches(tmp_path):
+    # The sandbox runs model-written install scripts and tests; those must
+    # not read or poison the user's shared npm cache and pnpm store. A cold
+    # cache per run is the price of isolation.
+    env = scrubbed_env({}, cache_root=str(tmp_path))
+    assert env["npm_config_cache"] == os.path.join(str(tmp_path), "npm-cache")
+    assert env["npm_config_store_dir"] == os.path.join(str(tmp_path), "pnpm-store")
+
+
+def test_no_cache_root_leaves_cache_env_alone(monkeypatch):
+    monkeypatch.delenv("npm_config_cache", raising=False)
+    monkeypatch.delenv("npm_config_store_dir", raising=False)
+    env = scrubbed_env({})
+    assert "npm_config_cache" not in env
+    assert "npm_config_store_dir" not in env
+
+
+def test_child_process_sees_the_isolated_caches(tmp_path):
+    # End to end at the process boundary, same shape as the key-scrub probe:
+    # the child observes the per-run cache paths, exactly what npm and pnpm
+    # will observe.
+    probe = subprocess.run(
+        [sys.executable, "-c",
+         "import os; print(os.environ['npm_config_cache']); "
+         "print(os.environ['npm_config_store_dir'])"],
+        env=scrubbed_env({}, cache_root=str(tmp_path)),
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    got = probe.stdout.splitlines()
+    assert got == [os.path.join(str(tmp_path), "npm-cache"),
+                   os.path.join(str(tmp_path), "pnpm-store")]

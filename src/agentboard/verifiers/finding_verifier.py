@@ -205,8 +205,10 @@ class FindingVerifier:
 
     def _run(self, args, cwd):
         # scrubbed_env: model-provider keys never reach executed code — the
-        # gate has no LLM in it, so nothing it spawns needs them.
-        env = scrubbed_env(self.profile.env)
+        # gate has no LLM in it, so nothing it spawns needs them. The warm
+        # root also hosts this run's private npm/pnpm caches (see
+        # scrubbed_env for the isolation-over-warmth tradeoff).
+        env = scrubbed_env(self.profile.env, cache_root=self._warm_root)
         return subprocess.run(
             args, cwd=cwd, env=env, capture_output=True, text=True, timeout=self.timeout
         )

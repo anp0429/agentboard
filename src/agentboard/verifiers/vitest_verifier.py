@@ -73,12 +73,24 @@ def _apply(change: CodeChange, work: str) -> tuple[bool, str]:
 _PROVIDER_CREDENTIALS = ("OPENAI_API_KEY", "ANTHROPIC_API_KEY")
 
 
-def scrubbed_env(profile_env: dict[str, str]) -> dict[str, str]:
+def scrubbed_env(profile_env: dict[str, str],
+                 cache_root: str | None = None) -> dict[str, str]:
     """The subprocess environment for everything the gate executes:
-    os.environ + the profile's env, minus model-provider credentials."""
+    os.environ + the profile's env, minus model-provider credentials.
+
+    cache_root, when given, points the package managers' caches inside the
+    run's own temp area: npm reads npm_config_cache, pnpm reads its
+    store-dir from the same npm-style env (npm_config_store_dir). The
+    sandbox runs model-written install scripts and tests; those must not
+    read or poison the user's shared ~/.npm cache and pnpm store, which
+    every later run (and the user's own shell) trusts. A cold cache per
+    run is the price of that isolation."""
     env = {**os.environ, **profile_env}
     for key in _PROVIDER_CREDENTIALS:
         env.pop(key, None)
+    if cache_root:
+        env["npm_config_cache"] = os.path.join(cache_root, "npm-cache")
+        env["npm_config_store_dir"] = os.path.join(cache_root, "pnpm-store")
     return env
 
 
@@ -236,7 +248,9 @@ class VitestVerifier:
     # ---- subprocess + parsing ----------------------------------------------
 
     def _run(self, args: list[str], cwd: str) -> subprocess.CompletedProcess:
-        env = scrubbed_env(self.profile.env)
+        # cwd is <run-temp>/repo; the run's temp area also hosts this run's
+        # private npm/pnpm caches (see scrubbed_env for the tradeoff).
+        env = scrubbed_env(self.profile.env, cache_root=os.path.dirname(cwd))
         return subprocess.run(
             args, cwd=cwd, env=env, capture_output=True, text=True, timeout=self.timeout
         )
