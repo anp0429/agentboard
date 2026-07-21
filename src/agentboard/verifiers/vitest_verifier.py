@@ -133,6 +133,12 @@ class RepoProfile:
     # failed"); a probe that RUNS the runner cannot be fooled by log noise.
     # None => skip.
     smoke_cmd: list[str] | None = None
+    # Which framework harness the gate should drive this repo with
+    # ("vitest" | "pytest"). A profile is repo facts, but the commands it
+    # names imply a framework, and the gate needs that named too — see
+    # harness.harness_for_profile. Default keeps every existing profile
+    # (and every hand-built one in tests) on the vitest path.
+    kind: str = "vitest"
 
     # ---- presets for the common cases --------------------------------------
 

@@ -415,17 +415,23 @@ class VitestHarness(Harness):
 
 
 def harness_for_profile(profile) -> Harness:
-    """The harness a profile's framework calls for. Selection is by
-    RepoProfile.kind; the default keeps every existing profile — including
-    ones built by hand in tests — on the vitest path unchanged."""
+    """The harness a profile's framework calls for. RepoProfile.kind is
+    "pytest" for python repos (set by config.build_profile) and "vitest"
+    otherwise; the default keeps every existing profile — including ones
+    built by hand in tests — on the vitest path unchanged."""
+    if getattr(profile, "kind", "") == "pytest":
+        from .pytest_harness import PytestHarness
+        return PytestHarness()
     return VitestHarness()
 
 
 def harness_for_target(target: str) -> Harness | None:
     """The harness whose source-file conventions cover `target`, or None
     when no framework claims the extension (the caller then asks for
-    --tests explicitly, exactly as before)."""
-    for cls in (VitestHarness,):
+    --tests explicitly, exactly as before). Imports are local so the
+    harness registry cannot create an import cycle."""
+    from .pytest_harness import PytestHarness
+    for cls in (VitestHarness, PytestHarness):
         if target.endswith(cls.src_suffixes):
             return cls()
     return None

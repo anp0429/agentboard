@@ -125,7 +125,10 @@ def detect_vitest_projects(repo_root: str) -> list[str]:
 
 
 def detect_profile_kind(repo_root: str) -> str:
-    """Infer the package manager from the lockfile. pnpm wins if both exist
+    """Infer the toolchain from the repo's own marker files. A JS lockfile
+    wins over Python markers (a Python repo that ships a lockfile is
+    declaring a JS toolchain; the reverse — a JS repo with a stray
+    pyproject — does not happen). pnpm wins if both JS lockfiles exist
     (pnpm repos often keep a stray package-lock around)."""
     if os.path.isfile(os.path.join(repo_root, "pnpm-lock.yaml")):
         return "pnpm-vitest"
@@ -133,6 +136,22 @@ def detect_profile_kind(repo_root: str) -> str:
         return "npm-vitest"
     if os.path.isfile(os.path.join(repo_root, "yarn.lock")):
         return "pnpm-vitest"  # closest preset; user can override in config
+    # Python: pytest's own config file, any pyproject, or a setup.cfg that
+    # carries a pytest section. Deliberately after the lockfile checks.
+    if os.path.isfile(os.path.join(repo_root, "pytest.ini")):
+        return "pytest"
+    if os.path.isfile(os.path.join(repo_root, "pyproject.toml")):
+        return "pytest"
+    setup_cfg = os.path.join(repo_root, "setup.cfg")
+    if os.path.isfile(setup_cfg):
+        try:
+            text = open(setup_cfg, encoding="utf-8").read()
+        except OSError:
+            text = ""
+        # both spellings seen in the wild: [tool:pytest] is the documented
+        # one; [tool.pytest] appears in files converted from pyproject.
+        if "[tool:pytest]" in text or "[tool.pytest" in text:
+            return "pytest"
     return ""
 
 
@@ -200,6 +219,28 @@ def build_profile(repo_root: str, cfg: Config, tests_file: str,
                   project_dir: str = ".") -> RepoProfile:
     scan_root = os.path.normpath(os.path.join(repo_root, project_dir))
     kind = cfg.profile_kind or detect_profile_kind(scan_root)
+    if kind == "pytest":
+        # Python profile. No install step by default: the gate runs in the
+        # environment the user already provisioned (the same interpreter
+        # running agentboard), because "pip install a repo's deps into a
+        # per-run venv" is a policy decision with real blast radius —
+        # deliberately out of scope until someone needs it. No build step
+        # either. Smoke = collect the tests file: proves pytest starts, the
+        # file parses, and its imports resolve before any finding is judged.
+        import sys
+        test_base = [sys.executable, "-m", "pytest"]
+        prof = RepoProfile(
+            name=os.path.basename(repo_root.rstrip("/")),
+            install_cmd=[],
+            test_base=test_base,
+            build_cmd=None,
+            env={"CI": "true"},
+            smoke_cmd=test_base + ["--collect-only", "-q", tests_file],
+            kind="pytest",
+        )
+        if cfg.harness_notes:
+            prof.harness_notes = cfg.harness_notes.strip()
+        return prof
     project = cfg.project
     if project is None:
         detected = detect_vitest_projects(scan_root)
