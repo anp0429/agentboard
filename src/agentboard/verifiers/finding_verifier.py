@@ -427,6 +427,12 @@ class FindingVerifier:
     # -- batched gate ---------------------------------------------------------
 
     _MARK = "___ab{i}___"
+    # anything in a PROPOSAL that looks like one of our marks. Attribution
+    # matches marks by substring in the executed test's title, so a proposal
+    # whose own title carries a lookalike (___ab0___) would hijack finding
+    # 0's verdict. Stripping the pattern before the gate adds its own mark
+    # guarantees the only mark in any executed title is gate-injected.
+    _MARK_RE = re.compile(r"___ab\d+___")
 
     def _classify_batch(self, findings: list[ReviewFinding]) -> set[int]:
         """Inject every finding's test at once (uniquely marked titles), run
@@ -460,11 +466,13 @@ class FindingVerifier:
             mark = self._MARK.format(i=i)
             # mark the title inside the test(...) opener itself — a naive
             # replace can hit a lookalike (comment, string) elsewhere and
-            # leave the real test unmarked -> unattributed -> serial fallback
+            # leave the real test unmarked -> unattributed -> serial fallback.
+            # The proposal is de-marked first (see _MARK_RE) so it cannot
+            # smuggle another finding's mark into its own title.
             code, n = re.subn(
                 r"""((?:test|it)\(\s*[`'"])""",
                 lambda m: m.group(1) + mark + " ",
-                f.test_code,
+                self._MARK_RE.sub("", f.test_code),
                 count=1,
             )
             if not n:
