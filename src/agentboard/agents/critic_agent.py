@@ -162,7 +162,15 @@ class CriticAgent:
                         {"role": "user", "content": user},
                     ],
                 )
-                data = _loads_gaps_lenient(resp.choices[0].message.content or "{}")
+                content = resp.choices[0].message.content or ""
+                if not content.strip():
+                    # Same silent-starvation mode as the reviewer: an empty
+                    # completion must not read as "the critic found nothing".
+                    reason = getattr(resp.choices[0], "finish_reason", "?")
+                    self.log(f"  [warn] critic: empty completion "
+                             f"(finish_reason={reason}) — the model likely "
+                             f"spent its whole token budget reasoning")
+                data = _loads_gaps_lenient(content or "{}")
             else:
                 resp = client.messages.create(
                     model=self.model,

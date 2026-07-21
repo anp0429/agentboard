@@ -63,7 +63,8 @@ def test_rename_rejection_is_retried_with_new_name():
     assert len(client.calls) == 2
     assert "max_tokens" in client.calls[0]
     assert "max_tokens" not in client.calls[1]
-    assert client.calls[1]["max_completion_tokens"] == 6000
+    # not the starved original budget: the retry carries reasoning headroom
+    assert client.calls[1]["max_completion_tokens"] == 24000
 
 
 def test_compatible_server_gets_one_call_with_max_tokens():
@@ -94,3 +95,18 @@ def test_unrelated_errors_propagate_without_retry():
     with pytest.raises(RuntimeError, match="401"):
         chat_completion(client, model="gpt-x", max_tokens=6000, messages=[])
     assert len(client.calls) == 1
+
+
+def test_rename_retry_raises_reasoning_headroom():
+    # The rename rejection only fires for real OpenAI reasoning models,
+    # whose budget covers hidden reasoning tokens before any output. The
+    # retry must carry real headroom, not re-send the starved 6000.
+    client = _Rejecting()
+    chat_completion(client, model="gpt-x", max_tokens=6000, messages=[])
+    assert client.calls[1]["max_completion_tokens"] == 24000
+
+
+def test_rename_retry_scales_with_a_larger_configured_budget():
+    client = _Rejecting()
+    chat_completion(client, model="gpt-x", max_tokens=10000, messages=[])
+    assert client.calls[1]["max_completion_tokens"] == 40000

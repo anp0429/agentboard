@@ -64,6 +64,15 @@ def chat_completion(client, **kwargs):
                 and "max_tokens" in message
                 and "max_completion_tokens" in message):
             kwargs = dict(kwargs)
-            kwargs["max_completion_tokens"] = kwargs.pop("max_tokens")
+            budget = kwargs.pop("max_tokens")
+            # The rename rejection only ever comes from real OpenAI
+            # reasoning models, and for those the budget covers hidden
+            # reasoning tokens BEFORE any output: 6000 can be consumed
+            # entirely by thinking, returning an empty completion that
+            # reads as "0 behaviors" with no error at all. Give the retry
+            # real headroom. Compatible endpoints never reach this branch,
+            # so their tight cap (metered routers reserve the ceiling
+            # against the account balance) is untouched.
+            kwargs["max_completion_tokens"] = max(4 * budget, 24000)
             return client.chat.completions.create(**kwargs)
         raise

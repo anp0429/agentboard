@@ -242,9 +242,19 @@ class ReviewerAgent:
                         {"role": "user", "content": user},
                     ],
                 )
+                content = resp.choices[0].message.content or ""
+                if not content.strip():
+                    # An empty completion is a failure wearing success's
+                    # clothes: a reasoning model can spend the whole token
+                    # budget thinking and return nothing, which downstream
+                    # reads as "0 behaviors" with no hint. Say it loudly.
+                    reason = getattr(resp.choices[0], "finish_reason", "?")
+                    self.log(f"  [warn] reviewer: empty completion "
+                             f"(finish_reason={reason}) — the model likely "
+                             f"spent its whole token budget reasoning")
                 # lenient, not strict: local models behind the same client
                 # sometimes fence their JSON despite response_format.
-                data = _loads_lenient(resp.choices[0].message.content or "{}")
+                data = _loads_lenient(content or "{}")
             else:
                 resp = client.messages.create(
                     model=self.model,
