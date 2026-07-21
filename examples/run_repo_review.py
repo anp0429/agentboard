@@ -17,10 +17,10 @@ Usage (point REPO at a clone of the repo under review):
 import sys
 
 from agentboard import build_loop, initial_board
-from agentboard.ingestion.repo_adapter import RepoIngestionAdapter
-from agentboard.verifiers.pytest_verifier import PytestVerifier
-from agentboard.whiteboards.flow_adapter import FlowWhiteboardAdapter
-from agentboard.state import CodeChange, Proposal
+from agentboard.experimental.ingestion.repo_adapter import RepoIngestionAdapter
+from agentboard.experimental.verifiers.pytest_verifier import PytestVerifier
+from agentboard.experimental.whiteboards.flow_adapter import FlowWhiteboardAdapter
+from agentboard.experimental.state import CodeChange, Proposal
 
 CONST = "svg_graph_parser/world1/constants.py"
 

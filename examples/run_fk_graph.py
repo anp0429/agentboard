@@ -16,14 +16,14 @@ with SMOKE_GOAL first (an easy red->green change), then switch to FK_GOAL.
 """
 import os
 import time
-from agentboard.loop import build_loop, initial_board
-from agentboard.state import Node
-from agentboard.agents.fix_with_test_agent import FixWithTestAgent
-from agentboard.agents.peer_reviewer import PeerReviewer, anthropic_review_fn
-from agentboard.verifiers.transition_verifier import TransitionVerifier
+from agentboard.experimental.loop import build_loop, initial_board
+from agentboard.experimental.state import Node
+from agentboard.experimental.agents.fix_with_test_agent import FixWithTestAgent
+from agentboard.experimental.agents.peer_reviewer import PeerReviewer, anthropic_review_fn
+from agentboard.experimental.verifiers.transition_verifier import TransitionVerifier
 from agentboard.verifiers.vitest_verifier import RepoProfile
 from agentboard.ingestion.intent import resolve_intent
-from agentboard.whiteboards.html_adapter import HtmlWhiteboardAdapter
+from agentboard.experimental.whiteboards.html_adapter import HtmlWhiteboardAdapter
 
 # --- edit these paths --------------------------------------------------------
 CLONE = os.environ.get("CLONE", "/path/to/your/clone")          # your clone of the PR branch

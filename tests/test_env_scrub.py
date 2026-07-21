@@ -54,7 +54,8 @@ def test_both_verifiers_route_through_scrubbed_env():
     # directly, the scrub silently stops applying. Pin the call sites.
     import inspect
 
-    from agentboard.verifiers import finding_verifier, vitest_verifier
+    from agentboard.experimental.verifiers import vitest_verifier
+    from agentboard.verifiers import finding_verifier
 
     for cls in (finding_verifier.FindingVerifier, vitest_verifier.VitestVerifier):
         src = inspect.getsource(cls._run)

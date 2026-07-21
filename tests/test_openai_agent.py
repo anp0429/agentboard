@@ -2,7 +2,7 @@
 needed — we test the fragile part (model JSON -> valid Proposals) directly, and
 a fake client to exercise the full propose() path.
 """
-from agentboard.agents.openai_agent import OpenAIAgent, parse_response
+from agentboard.experimental.agents.openai_agent import OpenAIAgent, parse_response
 
 SOURCE = "MATCH_TOL = 60.0  # tolerance\nATTACH_TOL = 30.0\n"
 
@@ -53,7 +53,7 @@ def test_propose_full_path_with_fake_client(tmp_path):
     content = '{"issues":[{"id":"i1","severity":"low","text":"x"}],"fixes":[]}'
     agent = OpenAIAgent(repo_root=str(tmp_path), client=_FakeClient(content),
                         focus_modules=["pkg/mod.py"])
-    from agentboard.state import Node
+    from agentboard.experimental.state import Node
     props = agent.propose("backend", "g", [Node("pkg/mod.py", "mod.py")], [], 1)
     assert len(props) == 1 and props[0].kind == "issue"
     # converges: nothing on iteration 2

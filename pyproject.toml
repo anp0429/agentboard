@@ -39,9 +39,9 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest", "ruff", "build"]
-# The legacy whiteboard/loop path (loop.py, graph.py) is the only code that
-# needs langgraph. The core `agentboard review` gate does not, so it is an
-# opt-in extra rather than a heavyweight default install.
+# The legacy whiteboard/loop path (agentboard.experimental) is the only code
+# that needs langgraph. The core `agentboard review` gate does not, so it is
+# an opt-in extra rather than a heavyweight default install.
 whiteboard = ["langgraph>=1.0"]
 # The MCP server (agentboard-mcp) — agentboard as a tool a coding agent
 # calls over stdio. Optional for the same reason as whiteboard: the core

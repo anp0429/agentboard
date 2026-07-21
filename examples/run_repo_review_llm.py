@@ -15,11 +15,11 @@ and shown on the board with the real reason.
 import sys
 
 from agentboard import build_loop, initial_board
-from agentboard.agents.openai_agent import OpenAIAgent
-from agentboard.agents.openai_explainer import OpenAIExplainer
-from agentboard.ingestion.repo_adapter import RepoIngestionAdapter
-from agentboard.verifiers.pytest_verifier import PytestVerifier
-from agentboard.whiteboards.flow_adapter import FlowWhiteboardAdapter
+from agentboard.experimental.agents.openai_agent import OpenAIAgent
+from agentboard.experimental.agents.openai_explainer import OpenAIExplainer
+from agentboard.experimental.ingestion.repo_adapter import RepoIngestionAdapter
+from agentboard.experimental.verifiers.pytest_verifier import PytestVerifier
+from agentboard.experimental.whiteboards.flow_adapter import FlowWhiteboardAdapter
 
 PERSONAS = [
     ("backend", "Ships features; wants precise behavior."),
