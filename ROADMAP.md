@@ -57,7 +57,17 @@ break the core thesis.
 
 ## Next
 
-- [ ] **The `underspecified` verdict (0.5.0 headline).** When a proposed behavior
+- [ ] **`prove` (0.5.0 headline).** The author-side verb, caveman-simple: an
+  agent (or you) wrote code, `agentboard prove` tries to break it, and the
+  output is one line first: `BROKEN: N failing tests, M attempts` or
+  `HELD: M executed attempts, 0 broke it`, evidence below. Zero required
+  flags: dirty tree reviews the working tree, clean tree reviews the branch
+  against its fork point, targets come from the diff (tests excluded),
+  intent derives from commit messages. Same engine, same gate, new door;
+  `review` stays as the maintainer/CI verb, unchanged. "Held" never claims
+  correctness, only that N executed attempts failed to break it. Spec and
+  launch gauntlet in `notes/prove.md`.
+- [ ] **The `underspecified` verdict (0.6.0 headline).** When a proposed behavior
   falls where the intent is silent, the gate currently forces it into
   gap-or-handled. Wrong frame: the honest answer is "the intent doesn't say;
   here is what the code actually does, with the executed test that proves it;
@@ -127,17 +137,17 @@ antidote is the discipline this repo already runs on.
 
 The sequence, one evidence-gated layer at a time:
 
-- **0.5.0, the `underspecified` verdict.** The gate learns the design
+- **0.6.0, the `underspecified` verdict.** The gate learns the design
   session's core sentence: "the intent doesn't say; here is what the code
   does, with the test that proves it; a human should rule." (Spec above.)
-- **0.6.0, evidence-gated arguments.** An Argument is a claim plus an
+- **0.7.0, evidence-gated arguments.** An Argument is a claim plus an
   attached executed artifact (benchmark, spike diff, probe result) or an
   explicit `opinion` flag. The board renders arguments, not chat.
-- **0.7.0, first design session.** Two agents debate one small feature,
+- **0.8.0, first design session.** Two agents debate one small feature,
   conflicts escalate to a human, and the session's output is a complete
   intent. Dogfooded on this repo's own roadmap. Pass/fail is concrete:
   a decision log you would show another engineer, or theater.
-- **0.8.0, the closed loop.** Session produces intent, implementation
+- **0.9.0, the closed loop.** Session produces intent, implementation
   follows, the gate verifies it, the board is the audit trail. Intent
   stops being incomplete, because producing complete intent is what the
   session is for.

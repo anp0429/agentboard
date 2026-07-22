@@ -464,3 +464,60 @@ def preflight(
             problems.append(f"'{tool}' not on PATH (the gate runs a real test suite)")
 
     return problems
+
+
+def working_tree_dirty(repo_root: str) -> bool:
+    """True when tracked files have uncommitted changes. prove's mode cue:
+    dirty means review the working tree (what the author is looking at),
+    clean means review the branch against its fork point."""
+    r = subprocess.run(
+        ["git", "-C", repo_root, "status", "--porcelain", "--untracked-files=no"],
+        capture_output=True, text=True,
+    )
+    return bool(r.stdout.strip())
+
+
+_PROVE_SOURCE_EXTS = (".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs", ".py")
+_PROVE_TEST_DIRS = {"test", "tests", "__tests__"}
+
+
+def _looks_like_test_file(rel_path: str) -> bool:
+    parts = rel_path.replace("\\", "/").split("/")
+    if any(p in _PROVE_TEST_DIRS for p in parts[:-1]):
+        return True
+    name = parts[-1]
+    stem = name.rsplit(".", 1)[0]
+    return (
+        ".test." in name
+        or ".spec." in name
+        or name.startswith("test_")
+        or stem.endswith("_test")
+        or name == "conftest.py"
+    )
+
+
+def targets_from_diff(
+    repo_root: str, base: str, head: str = "", worktree: bool = False,
+) -> list[str]:
+    """Changed source files with tests and deletions excluded: the targets
+    `prove` reviews when the user typed nothing. Worktree mode diffs the
+    working tree against base; ref mode diffs base...head (the branch's own
+    changes, not what base did since). Sorted, so a run's target list is
+    deterministic regardless of git's ordering."""
+    cmd = ["git", "-C", repo_root, "diff", "--name-only", "--diff-filter=d"]
+    if worktree:
+        cmd.append(base)
+    else:
+        cmd.append(f"{base}...{head}" if head else base)
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    if r.returncode != 0:
+        return []
+    out = []
+    for line in r.stdout.splitlines():
+        rel = line.strip()
+        if not rel or not rel.endswith(_PROVE_SOURCE_EXTS):
+            continue
+        if _looks_like_test_file(rel):
+            continue
+        out.append(rel)
+    return sorted(out)
