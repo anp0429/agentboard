@@ -54,20 +54,31 @@ jobs:
           ordered=$( { printf '%s\n' "$changed" | grep '^src/' || true; \
                        printf '%s\n' "$changed" | grep -v '^src/' || true; } )
           target=""
+          tests=""
           for f in $ordered; do
             stem=$(basename "$f")
             stem="${stem%.*}"
             dir=$(dirname "$f")
-            if [ -f "tests/test_${stem}.py" ] \
-               || [ -f "${dir}/${stem}.test.ts" ] || [ -f "${dir}/${stem}.test.js" ] \
-               || [ -f "${dir}/${stem}.spec.ts" ]; then
+            tf=""
+            if [ -f "tests/test_${stem}.py" ]; then
+              tf="tests/test_${stem}.py"
+            elif [ -f "${dir}/${stem}.test.ts" ]; then
+              tf="${dir}/${stem}.test.ts"
+            else
+              tf=$(grep -rlE "(from|import)[^#]*\b${stem}\b" tests/ 2>/dev/null | head -1 || true)
+            fi
+            if [ -n "$tf" ]; then
               target="$f"
+              tests="$tf"
               break
             fi
             echo "skip: ${f} (no matching tests file)"
           done
           echo "target=$target" >> "$GITHUB_OUTPUT"
-          if [ -z "$target" ]; then
+          echo "tests=$tests" >> "$GITHUB_OUTPUT"
+          if [ -n "$target" ]; then
+            echo "picked: ${target} with tests ${tests}"
+          else
             echo "No changed source file has a matching tests file; skipping quietly."
           fi
 
@@ -80,10 +91,12 @@ jobs:
           # Filenames are PR-controlled data. Passing through env (not inline
           # expression interpolation) keeps shell metacharacters inert.
           TARGET: ${{ steps.target.outputs.target }}
+          TESTS: ${{ steps.target.outputs.tests }}
         run: |
           agentboard review \
             --repo . \
             --target "$TARGET" \
+            --tests "$TESTS" \
             --base "$BASE_SHA" \
             --head "$HEAD_SHA" \
             --json-out agentboard-run.json \
