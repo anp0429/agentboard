@@ -21,6 +21,12 @@ break the core thesis.
   finding, instead of a full reinstall per finding.
 - **Diff ingestion.** Reviews the PR's actual changed lines (vs the merge-base),
   fed whole, not a single hand-picked file.
+- **First findings from the pytest path.** Pointed at Python repos it had never
+  seen, the gate caught `intword`'s 10^36..10^100 formatting gap in humanize
+  (never carries to googol) and marshmallow's nested `error_messages` shared by
+  reference across field instances via the constructor's shallow merge. Both
+  reported upstream with PRs offered; links in the README. Framework-agnostic
+  is now a receipt, not an architecture claim.
 
 ## Known weaknesses (measured or observed)
 
@@ -51,6 +57,16 @@ break the core thesis.
 
 ## Next
 
+- [ ] **The `underspecified` verdict (0.5.0 headline).** When a proposed behavior
+  falls where the intent is silent, the gate currently forces it into
+  gap-or-handled. Wrong frame: the honest answer is "the intent doesn't say;
+  here is what the code actually does, with the executed test that proves it;
+  a human should rule." Changes: the reviewer tags each proposal as
+  intent-implied or intent-silent, the verifier maps intent-silent + executed
+  to `underspecified` instead of `confirmed_gap`, and the board gets its own
+  section for them. Gaps accuse; underspecified asks. This is the first
+  primitive of the design-session loop below: it teaches the system to say
+  "the humans haven't decided this yet."
 - [x] **Dataset collector (Phase B).** `--dataset` appends one JSONL row per finding:
   the proposal, the executed verdict, the advisory audit. The label is `ran` (did the
   test execute), a model-free fact the audit never overwrites. Backfills from existing
@@ -95,7 +111,38 @@ rewards, applied to code review. The ladder, cheapest rung first:
   one learns on yours, and nothing leaves the building. Human comments train the proposer's
   taste, never the verdict. The gate stays model-free forever. Pilots only where authorized.
 
-## Larger, not yet built (the full loop)
+## Where this ends: the whiteboard
+
+The review gate is the first honest citizen of a larger loop: agents that
+design small features out loud, on a board, under the same rule the gate
+enforces on tests, lifted one level up. **No argument is admissible without
+evidence attached.** "This API shape is simpler" owes two spike diffs.
+"This won't scale" owes the executed probe. Everything else is tagged
+opinion and waits for a human. The goal was never AI writing 8,000 lines;
+it is AI decomposing a problem into small verified iterations, pausing at
+every decision a human hasn't made, and self-documenting the whole arc.
+The graveyard of "AI software team" tools died of discussion theater:
+transcripts of plausible debate with nothing load-bearing in them. The
+antidote is the discipline this repo already runs on.
+
+The sequence, one evidence-gated layer at a time:
+
+- **0.5.0, the `underspecified` verdict.** The gate learns the design
+  session's core sentence: "the intent doesn't say; here is what the code
+  does, with the test that proves it; a human should rule." (Spec above.)
+- **0.6.0, evidence-gated arguments.** An Argument is a claim plus an
+  attached executed artifact (benchmark, spike diff, probe result) or an
+  explicit `opinion` flag. The board renders arguments, not chat.
+- **0.7.0, first design session.** Two agents debate one small feature,
+  conflicts escalate to a human, and the session's output is a complete
+  intent. Dogfooded on this repo's own roadmap. Pass/fail is concrete:
+  a decision log you would show another engineer, or theater.
+- **0.8.0, the closed loop.** Session produces intent, implementation
+  follows, the gate verifies it, the board is the audit trail. Intent
+  stops being incomplete, because producing complete intent is what the
+  session is for.
+
+The staged pieces, already built or stubbed:
 
 - [x] **Fix stage (wired, not yet proven on a real run).** For a confirmed gap,
   `FixAgent` proposes a minimal CodeChange and `TransitionVerifier.verify_transition`
@@ -105,10 +152,10 @@ rewards, applied to code review. The ladder, cheapest rung first:
   a real gap (the composite-FK gap is the natural candidate).
 - [ ] **Conflict -> human gate on the board.** When agents disagree on a fix, or a
   fix regresses, surface it as a Conflict and pause for a human decision. Logic is
-  stubbed; not wired to the fix stage.
+  stubbed; not wired to the fix stage. This is the escalation primitive 0.7.0 runs on.
 - [ ] **Everything on the board.** Findings, proposed fixes, the gate's verdict on
   each fix, conflicts, human decisions, all projected to `board.html` as the audit
-  trail.
+  trail. This is the rendering surface 0.6.0 formalizes.
 - [ ] **Memory (last).** Cache verdicts by (intent + code-hash) to skip settled work.
   Must feed the AGENT (skip re-proposing), never the GATE (always re-runs the real
   test), and must invalidate on code change. Build only after the loop above is

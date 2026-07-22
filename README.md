@@ -307,6 +307,23 @@ not `/models`.
   `#`, so a fragment directly after the base path broke both operations.
   Reported upstream with a fix and regression tests.
 
+- [python-humanize/humanize](https://github.com/python-humanize/humanize/issues/356): proposed tests for the
+  recent `number.py` changes (the #328 carry fix among them) caught `intword`
+  formatting every value between 10^36 and 10^100 as an enormous decillion
+  count (a 67-digit unit multiplier) and never carrying to "1.0 googol" at
+  the boundary. Reported upstream with two candidate behaviors for the
+  maintainers to choose between; PR offered.
+- [marshmallow-code/marshmallow](https://github.com/marshmallow-code/marshmallow/issues/3005): proposed tests
+  for the recent `fields.py` changes (#2907 among them) caught nested
+  `error_messages` values shared by reference across all instances of a field
+  class and the class default itself, via the constructor's shallow
+  `dict.update` merge: one instance's customization silently rewrites every
+  sibling and all future instances. Reported upstream; PR offered.
+
+The humanize and marshmallow findings are the first from the pytest path:
+the same gate, proposing and executing pytest instead of vitest, against
+repositories it had never seen.
+
 Every finding above was produced by executing tests, and every one is
 reproducible by hand.
 
