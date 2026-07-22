@@ -33,6 +33,10 @@ class ReviewFinding:
     audit: str = ""                    # "likely_real" | "likely_false_positive" | "uncertain"
     audit_reason: str = ""
     audit_evidence: str = ""
+    # deterministic precision layer: set when this gap's failure message is
+    # shared verbatim by several other gaps in the same run (see
+    # flag_systematic_artifacts). Advisory — NEVER changes status.
+    artifact_note: str = ""
     # fix stage (TransitionVerifier is the judge — red->green->no-regression)
     fix_status: str = ""               # "" | "fix_verified" | "fix_rejected" | "fix_not_attempted"
     fix_note: str = ""                 # verifier's reason (or agent's failure to propose)
@@ -51,6 +55,44 @@ class ReviewRun:
     @property
     def gaps(self) -> list[ReviewFinding]:
         return [f for f in self.findings if f.status == "confirmed_gap"]
+
+
+def flag_systematic_artifacts(findings: list[ReviewFinding],
+                              threshold: int = 3) -> list[str]:
+    """Deterministic FP heuristic: N confirmed gaps failing with the VERBATIM
+    same message are one shared cause, not N independent bugs.
+
+    Found on supabase/mcp#324: nine "confirmed gaps" all read "Target cannot
+    be null or undefined." — every generated test unwrapped the tool response
+    with the wrong shape, so nine well-formed assertions hit the same null.
+    Real gaps fail in their own words; artifacts fail in unison. The status
+    is untouched (the tests DID execute and fail — the gate does not lie);
+    each member gets an artifact_note, and the returned warnings are for the
+    run-level banner. Grouping is by the first line of `observed`, exact —
+    normalizing further (stripping numbers etc.) would merge genuinely
+    distinct assertion failures. Purely mechanical: no model in the loop."""
+    groups: dict[str, list[ReviewFinding]] = {}
+    for f in findings:
+        if f.status != "confirmed_gap" or not f.observed.strip():
+            continue
+        key = f.observed.strip().splitlines()[0]
+        groups.setdefault(key, []).append(f)
+    warnings: list[str] = []
+    for key, members in groups.items():
+        if len(members) < threshold:
+            continue
+        for f in members:
+            f.artifact_note = (
+                f"identical failure shared by {len(members)} gaps — "
+                "suspected setup/unwrapping artifact, one cause"
+            )
+        warnings.append(
+            f"{len(members)} confirmed gaps share one verbatim failure "
+            f"({key[:90]!r}) — that is one shared cause (test setup, response "
+            "unwrapping, or scope), not independent bugs. Verify the shared "
+            "cause before treating any of them as real."
+        )
+    return warnings
 
 
 _STATUS_LABEL = {
