@@ -47,10 +47,14 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          target=$(git diff --name-only "$BASE_SHA...$HEAD_SHA" \
+          changed=$(git diff --name-only "$BASE_SHA...$HEAD_SHA" \
             | grep -E '\.(ts|tsx|js|jsx|mjs|py)$' \
-            | grep -vE '\.test\.|\.spec\.|/tests?/|__tests__|__init__\.py|conftest' \
-            | head -1 || true)
+            | grep -vE '\.test\.|\.spec\.|/tests?/|__tests__|__init__\.py|conftest|^examples/|^scripts/' \
+            || true)
+          target=$(printf '%s\n' "$changed" | grep '^src/' | head -1 || true)
+          if [ -z "$target" ]; then
+            target=$(printf '%s\n' "$changed" | head -1 || true)
+          fi
           echo "target=$target" >> "$GITHUB_OUTPUT"
           if [ -z "$target" ]; then
             echo "No reviewable source change in this PR; skipping quietly."
