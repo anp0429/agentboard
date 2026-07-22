@@ -41,7 +41,7 @@ from .config import (
 from .fingerprint import verdict_summary
 from .proposal_cache import propose_or_cached
 from .providers import endpoint_label
-from .review import ReviewRun, render_review_html
+from .review import ReviewRun, flag_systematic_artifacts, render_review_html
 from .verifiers.finding_verifier import FindingVerifier
 from .verifiers.harness import harness_for_profile, harness_for_target
 
@@ -321,11 +321,21 @@ def run_review(request: ReviewRequest, log=print) -> ReviewResult:
             log(f"  {line}")
         log()
 
+    # Deterministic precision pass: gaps failing in unison are one cause.
+    artifact_warnings = flag_systematic_artifacts(run.findings)
+    if artifact_warnings:
+        log("\nSYSTEMATIC FAILURE SUSPECTED — read before filing anything:")
+        for w in artifact_warnings:
+            log(f"  {w}")
+        log()
+
     for f in run.findings:
         tag = f"{f.source_file}: " if len(pairs) > 1 and f.source_file else ""
         log(f"  [{f.status:14}] {tag}{f.behavior[:60]}")
         if f.observed and f.status not in ("handled", "skipped_covered"):
             log(f"       -> {f.observed[:120]}")
+        if f.artifact_note:
+            log(f"       [artifact?] {f.artifact_note}")
         if f.audit:
             log(f"       [auditor] {f.audit}"
                 + (f" — {f.audit_reason[:100]}" if f.audit_reason else ""))
