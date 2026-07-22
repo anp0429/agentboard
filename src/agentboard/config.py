@@ -24,6 +24,16 @@ from .verifiers.vitest_verifier import RepoProfile
 CONFIG_NAME = ".agentboard.toml"
 
 
+class ConfigError(ValueError):
+    """A config problem the user must fix (e.g. a bad --config path).
+
+    Deliberately an Exception subclass, unlike the SystemExit this replaced:
+    SystemExit sails straight through `except Exception` at the adapter
+    boundaries, so a typo'd --config could kill a long-lived MCP server
+    instead of failing one call. The friendly message and exit code 1 are
+    the api boundary's job (api.run_review), not this module's."""
+
+
 @dataclass
 class Config:
     profile_kind: str = ""            # "pnpm-vitest" | "npm-vitest" | "" (autodetect)
@@ -35,6 +45,10 @@ class Config:
     reviewer_model: str = "gpt-5.5"
     critic_model: str = "gpt-5.5"
     run_critic: bool = True
+    base_url: str = ""                # pin the OpenAI-compatible endpoint for
+                                      # this repo, so shell state cannot
+                                      # silently redefine what a model name
+                                      # means (env still wins when set)
     extra: dict = field(default_factory=dict)
 
 
@@ -59,7 +73,7 @@ def load_config(repo_root: str, config_path: str = "") -> Config:
     if config_path:
         path = os.path.expanduser(config_path)
         if not os.path.isfile(path):
-            raise SystemExit("--config " + config_path + ": file not found")
+            raise ConfigError("--config " + config_path + ": file not found")
     else:
         path = os.path.join(repo_root, CONFIG_NAME)
         if not os.path.isfile(path):
@@ -78,6 +92,7 @@ def load_config(repo_root: str, config_path: str = "") -> Config:
         reviewer_model=data.get("reviewer_model", "gpt-5.5"),
         critic_model=data.get("critic_model", "gpt-5.5"),
         run_critic=bool(data.get("critic", True)),
+        base_url=data.get("base_url", ""),
         extra=data,
     )
 
@@ -115,7 +130,10 @@ def detect_vitest_projects(repo_root: str) -> list[str]:
 
 
 def detect_profile_kind(repo_root: str) -> str:
-    """Infer the package manager from the lockfile. pnpm wins if both exist
+    """Infer the toolchain from the repo's own marker files. A JS lockfile
+    wins over Python markers (a Python repo that ships a lockfile is
+    declaring a JS toolchain; the reverse — a JS repo with a stray
+    pyproject — does not happen). pnpm wins if both JS lockfiles exist
     (pnpm repos often keep a stray package-lock around)."""
     if os.path.isfile(os.path.join(repo_root, "pnpm-lock.yaml")):
         return "pnpm-vitest"
@@ -123,6 +141,22 @@ def detect_profile_kind(repo_root: str) -> str:
         return "npm-vitest"
     if os.path.isfile(os.path.join(repo_root, "yarn.lock")):
         return "pnpm-vitest"  # closest preset; user can override in config
+    # Python: pytest's own config file, any pyproject, or a setup.cfg that
+    # carries a pytest section. Deliberately after the lockfile checks.
+    if os.path.isfile(os.path.join(repo_root, "pytest.ini")):
+        return "pytest"
+    if os.path.isfile(os.path.join(repo_root, "pyproject.toml")):
+        return "pytest"
+    setup_cfg = os.path.join(repo_root, "setup.cfg")
+    if os.path.isfile(setup_cfg):
+        try:
+            text = open(setup_cfg, encoding="utf-8").read()
+        except OSError:
+            text = ""
+        # both spellings seen in the wild: [tool:pytest] is the documented
+        # one; [tool.pytest] appears in files converted from pyproject.
+        if "[tool:pytest]" in text or "[tool.pytest" in text:
+            return "pytest"
     return ""
 
 
@@ -174,22 +208,95 @@ def detect_pnpm_version(scan_root: str) -> str:
     or no pin falls back to 9. Found on pathe: pnpm 10/11 repos use
     pnpm-workspace.yaml as a plain config file with no `packages` field,
     which pnpm 9 rejects — so pinning 9 for everyone breaks modern repos the
-    same way ambient pnpm 7 broke Node 22."""
+    same way ambient pnpm 7 broke Node 22.
+
+    The pin also migrates: supabase/mcp dropped packageManager entirely and
+    now pins pnpm in mise.toml ([tools] pnpm = "10"), while its workspace
+    file uses pnpm-10 fields (ignoredBuiltDependencies). Falling back to 9
+    there ran the whole repo under a pnpm its config was never written for.
+    So the search order is: packageManager, mise.toml, .tool-versions, 9."""
+    pin = ""
     try:
         with open(os.path.join(scan_root, "package.json"), encoding="utf-8") as fh:
             pin = str(json.load(fh).get("packageManager", ""))
     except (OSError, ValueError):
-        return "9"
+        pass
     m = re.match(r"pnpm@(\d+)(?:\.(\d+))?(?:\.(\d+))?", pin)
+    if m and int(m.group(1)) >= 9:
+        return ".".join(p for p in m.groups() if p is not None)
+    if not m:  # no packageManager pin — check toolchain managers
+        v = _pnpm_from_mise(scan_root) or _pnpm_from_tool_versions(scan_root)
+        if v:
+            return v
+    return "9"
+
+
+def _pnpm_pin_ok(raw: str) -> str:
+    """Normalize a toolchain-manager pin to an npx-usable version, or ''.
+    Non-numeric channels ("latest", "lts") and ancient pins are rejected —
+    the fallback of 9 handles those."""
+    m = re.match(r"(\d+)(?:\.(\d+))?(?:\.(\d+))?$", raw.strip())
     if not m or int(m.group(1)) < 9:
-        return "9"
+        return ""
     return ".".join(p for p in m.groups() if p is not None)
+
+
+def _pnpm_from_mise(scan_root: str) -> str:
+    """pnpm pin from mise.toml's [tools] table. Values can be a bare string,
+    a {version = ...} table, or a list (first entry wins, per mise docs)."""
+    try:
+        import tomllib
+        with open(os.path.join(scan_root, "mise.toml"), "rb") as fh:
+            tools = tomllib.load(fh).get("tools", {})
+    except (OSError, ValueError):
+        return ""
+    raw = tools.get("pnpm", "")
+    if isinstance(raw, dict):
+        raw = raw.get("version", "")
+    if isinstance(raw, list):
+        raw = raw[0] if raw else ""
+    return _pnpm_pin_ok(str(raw))
+
+
+def _pnpm_from_tool_versions(scan_root: str) -> str:
+    """pnpm pin from an asdf/mise .tool-versions file ("pnpm 10.12.1")."""
+    try:
+        with open(os.path.join(scan_root, ".tool-versions"), encoding="utf-8") as fh:
+            for line in fh:
+                parts = line.split("#", 1)[0].split()
+                if len(parts) >= 2 and parts[0] == "pnpm":
+                    return _pnpm_pin_ok(parts[1])
+    except OSError:
+        pass
+    return ""
 
 
 def build_profile(repo_root: str, cfg: Config, tests_file: str,
                   project_dir: str = ".") -> RepoProfile:
     scan_root = os.path.normpath(os.path.join(repo_root, project_dir))
     kind = cfg.profile_kind or detect_profile_kind(scan_root)
+    if kind == "pytest":
+        # Python profile. No install step by default: the gate runs in the
+        # environment the user already provisioned (the same interpreter
+        # running agentboard), because "pip install a repo's deps into a
+        # per-run venv" is a policy decision with real blast radius —
+        # deliberately out of scope until someone needs it. No build step
+        # either. Smoke = collect the tests file: proves pytest starts, the
+        # file parses, and its imports resolve before any finding is judged.
+        import sys
+        test_base = [sys.executable, "-m", "pytest"]
+        prof = RepoProfile(
+            name=os.path.basename(repo_root.rstrip("/")),
+            install_cmd=[],
+            test_base=test_base,
+            build_cmd=None,
+            env={"CI": "true"},
+            smoke_cmd=test_base + ["--collect-only", "-q", tests_file],
+            kind="pytest",
+        )
+        if cfg.harness_notes:
+            prof.harness_notes = cfg.harness_notes.strip()
+        return prof
     project = cfg.project
     if project is None:
         detected = detect_vitest_projects(scan_root)
@@ -207,6 +314,9 @@ def build_profile(repo_root: str, cfg: Config, tests_file: str,
             os.path.basename(repo_root.rstrip("/")),
             filter=cfg.filter, project=project, build=cfg.build,
             pnpm_version=detect_pnpm_version(scan_root),
+            # honor the repo's pinned dependency set when it ships one; the
+            # verifier retries unfrozen (with a note) if the pin is stale
+            frozen=os.path.isfile(os.path.join(scan_root, "pnpm-lock.yaml")),
         )
     if cfg.harness_notes:
         prof.harness_notes = cfg.harness_notes.strip()
@@ -266,6 +376,7 @@ def preflight(
     need_critic: bool,
     critic_model: str,
     worktree: bool = False,
+    provider_base_url: str = "",
 ) -> list[str]:
     """Every check that can fail cheaply, run before any token is spent.
     Returns a list of human-readable problems; empty means go.
@@ -313,11 +424,12 @@ def preflight(
     def _model_needs(m: str) -> str | None:
         """Env key a model requires, or None. Routing rule lives in
         providers.uses_anthropic; this mirrors it. A non-claude model with
-        OPENAI_BASE_URL set is a local/compatible endpoint: no key needed."""
+        a base URL (env or the repo config's base_url pin) is a
+        local/compatible endpoint: no key needed."""
         from .providers import uses_anthropic
         if uses_anthropic(m):
             return "ANTHROPIC_API_KEY"
-        if os.environ.get("OPENAI_BASE_URL", "").strip():
+        if os.environ.get("OPENAI_BASE_URL", "").strip() or provider_base_url:
             return None
         return "OPENAI_API_KEY"
 
@@ -331,6 +443,20 @@ def preflight(
             problems.append(
                 f"missing {k} (needed by the model you selected; for a "
                 "local OpenAI-compatible server, set OPENAI_BASE_URL instead)"
+            )
+
+    # Key-shape truth, learned live: an OpenRouter key (they start sk-or-)
+    # aimed at api.openai.com can only be rejected, five expensive seconds
+    # from now. Say so here, with the fix.
+    if "OPENAI_API_KEY" in keys:
+        key = os.environ.get("OPENAI_API_KEY", "")
+        if key.startswith("sk-or-"):
+            problems.append(
+                "OPENAI_API_KEY looks like an OpenRouter key (sk-or-...) but "
+                "no base URL is set, so requests would go to api.openai.com "
+                "and be rejected. Either export "
+                "OPENAI_BASE_URL=https://openrouter.ai/api/v1 or set your "
+                "real OpenAI key."
             )
 
     for tool in ("node", "npm", "git"):

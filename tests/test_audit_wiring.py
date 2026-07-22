@@ -131,7 +131,8 @@ def test_pr_comment_renders_the_audit_line(tmp_path):
 def test_fp_without_evidence_is_downgraded():
     # A dismissal that cites no source line has not earned the FP call.
     # This guards the r2-inversion class: a real strict catch was flagged FP.
-    import types, json as _json
+    import json as _json
+    import types
     calls = []
     def create(**kwargs):
         calls.append(kwargs)
@@ -152,7 +153,8 @@ def test_fp_without_evidence_is_downgraded():
 
 
 def test_empty_reason_triggers_one_retry():
-    import types, json as _json
+    import json as _json
+    import types
     from agentboard.agents.gap_auditor import GapAuditor
     from agentboard.review import ReviewFinding
     seq = [
@@ -161,7 +163,8 @@ def test_empty_reason_triggers_one_retry():
     ]
     box = {"i": 0}
     def create(**kwargs):
-        p = seq[min(box["i"], len(seq) - 1)]; box["i"] += 1
+        p = seq[min(box["i"], len(seq) - 1)]
+        box["i"] += 1
         msg = types.SimpleNamespace(content=_json.dumps(p))
         return types.SimpleNamespace(choices=[types.SimpleNamespace(message=msg)])
     client = types.SimpleNamespace(

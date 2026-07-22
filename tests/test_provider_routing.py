@@ -8,6 +8,7 @@ that client at a local server (Ollama, LM Studio, vLLM). These tests pin
 the rule, each consumer's use of it, the preflight key logic, and the
 openai-path leniency that local models need."""
 
+import os
 import types
 
 import pytest
@@ -132,3 +133,74 @@ def test_local_model_fenced_json_still_parses():
 def test_fenced_salvage_helper_direct():
     out = _loads_lenient('```json\n{"behaviors": [{"behavior": "x"}]}\n```')
     assert out["behaviors"] and out["behaviors"][0]["behavior"] == "x"
+
+
+# ---------------------------------------------------------------------------
+# endpoint visibility and key-shape truth (the key-mess cleanup)
+# ---------------------------------------------------------------------------
+
+def test_endpoint_label_default_is_openai(monkeypatch):
+    from agentboard.providers import endpoint_label
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    assert endpoint_label("gpt-5.5") == "api.openai.com"
+
+
+def test_endpoint_label_shows_env_redirect(monkeypatch):
+    from agentboard.providers import endpoint_label
+    monkeypatch.setenv("OPENAI_BASE_URL", "http://localhost:11434/v1")
+    assert endpoint_label("gpt-5.5") == "localhost:11434"
+
+
+def test_endpoint_label_explicit_pin_beats_env(monkeypatch):
+    from agentboard.providers import endpoint_label
+    monkeypatch.setenv("OPENAI_BASE_URL", "http://localhost:11434/v1")
+    assert endpoint_label("qwen3", "https://openrouter.ai/api/v1") == "openrouter.ai"
+
+
+def test_endpoint_label_claude_is_anthropic(monkeypatch):
+    from agentboard.providers import endpoint_label
+    assert endpoint_label("claude-opus-4-8") == "anthropic"
+
+
+def test_config_base_url_key_is_loaded(tmp_path):
+    from agentboard.config import load_config
+    p = tmp_path / "cfg.toml"
+    p.write_text('base_url = "http://localhost:11434/v1"\n')
+    cfg = load_config(str(tmp_path), str(p))
+    assert cfg.base_url == "http://localhost:11434/v1"
+
+
+def test_openrouter_key_without_base_url_fails_preflight(tmp_path, monkeypatch):
+    import subprocess
+
+    from agentboard.config import preflight
+
+    repo = str(tmp_path / "r")
+    os.makedirs(repo)
+    subprocess.run(["git", "-C", repo, "init", "-q"], check=True)
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-or-v1-abc123")
+    problems = preflight(
+        repo_root=repo, head="HEAD", base="HEAD", target="", tests="",
+        reviewer_model="gpt-5.5", need_critic=False, critic_model="gpt-5.5",
+        worktree=True,
+    )
+    assert any("OpenRouter key" in p for p in problems)
+
+
+def test_openrouter_key_with_base_url_is_fine(tmp_path, monkeypatch):
+    import subprocess
+
+    from agentboard.config import preflight
+
+    repo = str(tmp_path / "r")
+    os.makedirs(repo)
+    subprocess.run(["git", "-C", repo, "init", "-q"], check=True)
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://openrouter.ai/api/v1")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-or-v1-abc123")
+    problems = preflight(
+        repo_root=repo, head="HEAD", base="HEAD", target="", tests="",
+        reviewer_model="gpt-5.5", need_critic=False, critic_model="gpt-5.5",
+        worktree=True,
+    )
+    assert not any("OpenRouter key" in p for p in problems)

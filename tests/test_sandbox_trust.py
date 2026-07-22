@@ -227,3 +227,50 @@ def test_inject_into_semicolonless_describe_file():
     assert err == ""
     assert out is not None
     assert out.index("test('new'") < out.rindex("\n})")
+
+
+# ---------------------------------------------------------------------------
+# timeouts during prep: same loud error path as a failed install/build
+# ---------------------------------------------------------------------------
+
+def test_install_timeout_is_one_loud_prep_error(tmp_path, monkeypatch):
+    """A hung install must land in the prep-error path, exactly like a
+    failed one. The smoke probe always caught TimeoutExpired; install and
+    build let it escape as a traceback through the whole run."""
+    import subprocess
+
+    repo = _repo_with_tests_file(tmp_path)
+
+    def hang(args, **kwargs):
+        raise subprocess.TimeoutExpired(cmd=args, timeout=kwargs.get("timeout"))
+
+    monkeypatch.setattr(subprocess, "run", hang)
+    v = FindingVerifier(repo, _profile(None), "tests/suite.test.ts", timeout=7)
+    try:
+        v._ensure_warm()  # must not raise
+        assert v._prep_error == "install did not finish within 7s"
+    finally:
+        v.close()
+
+
+def test_install_timeout_is_a_run_level_banner(tmp_path, monkeypatch):
+    """And at run() level it is the one env_error banner, never a crash and
+    never per-finding noise."""
+    import subprocess
+
+    from agentboard.review import ReviewFinding, ReviewRun
+
+    repo = _repo_with_tests_file(tmp_path)
+
+    def hang(args, **kwargs):
+        raise subprocess.TimeoutExpired(cmd=args, timeout=kwargs.get("timeout"))
+
+    monkeypatch.setattr(subprocess, "run", hang)
+    v = FindingVerifier(repo, _profile(None), "tests/suite.test.ts", timeout=7)
+    run = ReviewRun(
+        intent="i", target="t",
+        findings=[ReviewFinding(behavior="a", test_code="test('a', ()=>{})")],
+    )
+    v.run(run)
+    assert run.env_error == "install did not finish within 7s"
+    assert run.findings[0].status == "broken_test"

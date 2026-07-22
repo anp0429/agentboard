@@ -7,7 +7,7 @@ verify-before-commit loop until it converges, and writes an iteration-tagged
 whiteboard you can open in a browser.
 """
 from agentboard import TextIngestionAdapter, build_loop, initial_board
-from agentboard.whiteboards.flow_adapter import FlowWhiteboardAdapter
+from agentboard.experimental.whiteboards.flow_adapter import FlowWhiteboardAdapter
 
 SOURCE = """
 - Order service

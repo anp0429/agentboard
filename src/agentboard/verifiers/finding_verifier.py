@@ -22,11 +22,15 @@ Note the honest ceiling: a confirmed_gap means the tool violated a *stated*
 assertion that compiled and ran. It does NOT prove the assertion itself is the
 *right* thing to assert — judging that is the second agent / human layer. This
 gate confirms "the test is real and the tool fails it," nothing more.
+
+This module owns the gate SEMANTICS only. Everything framework-specific —
+injection, naming, run commands, output parsing, what counts as a named
+assertion failure — lives behind the Harness seam (harness.py). The default
+harness is vitest, so every existing caller is unchanged.
 """
 
 from __future__ import annotations
 
-import json
 import os
 import re
 import shutil
@@ -35,87 +39,17 @@ import tempfile
 import time
 
 from ..review import ReviewFinding, ReviewRun
-from .vitest_verifier import RepoProfile, _tail, scrubbed_env
+from .harness import Harness, VitestHarness
+from .vitest_verifier import (RepoProfile, _proc_tail, scrubbed_env,
+                              unfrozen_install)
 
-
-def _inject(pristine: str, test_code: str) -> tuple[str | None, str]:
-    """Inject the agent's test into the pristine tests-file content (PURE).
-
-    Works on the pristine content in memory (not the file on disk) so the warm
-    base can inject a DIFFERENT test per finding, each starting from a clean file
-    — never stacking one finding's test on top of another's.
-
-    Placement is load-bearing, and it is decided by the LAST top-level opener
-    (column-0 describe/test/it), not by whether a describe exists anywhere:
-
-    * Last opener is describe -> the file ENDS in a describe block; insert
-      before its final column-0 close so the proposal inherits
-      describe-scoped helpers (learned against zod, whose tests file is one
-      wrapping describe).
-    * Last opener is test/it -> the file ends in top-level tests; the final
-      `})` closes the LAST TEST, and inserting there nests the proposal
-      inside another test's body, where `-t` skipping means it never
-      registers at runtime ("name match failed") while a typecheck project
-      still "passes" it statically. Append at end of file instead: module
-      scope is always legal and module imports/helpers are in scope.
-
-    The second case includes MIXED files — describes early, top-level its at
-    the end (jotai's store.test.tsx, found on benchmark row 6, where the old
-    "any describe anywhere" routing nested all 10 proposals inside the final
-    it). EOF-append was proven against jotai's real environment before this
-    rule was written.
-    """
-    if not test_code:
-        return None, "no test supplied"
-    code = _strip_imports(test_code).rstrip()
-    if not code:
-        return None, "test contained only imports"
-    openers = re.findall(r"^(describe|test|it)\b", pristine, flags=re.M)
-    if openers and openers[-1] == "describe":
-        tail = pristine.rstrip()
-        # Column-0 close, with or without a semicolon: prettier semi:false
-        # repos (zustand was the one that surfaced this) end the block with
-        # `})` not `});`. Indented closes still never match, so the top-level
-        # placement guarantee is unchanged.
-        idx = tail.rfind("\n});")
-        if idx == -1:
-            idx = tail.rfind("\n})")
-        if idx == -1:
-            return None, "could not find describe-block close to inject before"
-        return pristine[:idx] + "\n\n" + code + "\n" + pristine[idx:], ""
-    return pristine.rstrip() + "\n\n" + code + "\n", ""
-
-
-
-
-def _strip_imports(test_code: str) -> str:
-    """Remove module-level import statements from proposed test code.
-
-    Proposals are injected INTO an existing tests file, never run standalone —
-    and ES imports are only legal at module top level, so a proposal that
-    carries its own imports fails the whole file's transform (three findings
-    died this way against zod). The harness rule already tells the proposer
-    to reuse the host file's imports; stripping enforces it mechanically.
-    If a stripped import was genuinely needed, the test fails at runtime with
-    a clear ReferenceError — still a correct broken_test, instead of a
-    transform failure that poisons the batch.
-    """
-    out, skipping = [], False
-    for line in test_code.splitlines():
-        stripped = line.strip()
-        if skipping:
-            if stripped.endswith(";") or stripped.endswith('"') or stripped.endswith("'"):
-                skipping = False
-            continue
-        if stripped.startswith("import ") or stripped.startswith("import{"):
-            # multi-line import: skip until the closing `from "..."` line
-            if not (stripped.endswith(";") or " from " in stripped and
-                    (stripped.endswith('";') or stripped.endswith("';")
-                     or stripped.endswith('"') or stripped.endswith("'"))):
-                skipping = " from " not in stripped
-            continue
-        out.append(line)
-    return "\n".join(out)
+# Back-compat aliases: the vitest injection rules moved into VitestHarness
+# (harness.py) with their provenance comments; these names stay importable
+# here because tests and older callers pin them.
+_VITEST = VitestHarness()
+_inject = _VITEST.inject
+_strip_imports = _VITEST.strip_imports
+_test_title = _VITEST.test_title
 
 
 _COPY_IGNORES = {".git", "node_modules", "dist", "__pycache__"}
@@ -159,14 +93,7 @@ def _copy_discrepancies(src: str, dst: str, limit: int = 5) -> list[str]:
     return diffs
 
 
-def _test_title(test_code: str) -> str | None:
-    m = re.search(r"""(?:test|it)\(\s*[`'"](.+?)[`'"]""", test_code or "")
-    return m.group(1) if m else None
-
-
 class FindingVerifier:
-    _RESULT = "agentboard-finding-result.json"
-
     def __init__(
         self,
         repo_root: str,
@@ -175,14 +102,22 @@ class FindingVerifier:
         timeout: int = 1800,
         reuse_warm: bool = False,
         project_dir: str = ".",
+        log=print,
+        harness: Harness | None = None,
     ):
         self.repo_root = repo_root
-        # Repo-relative dir the JS toolchain runs in. The warm copy is still
+        # print-shaped narration sink; the caller picks where lines go (the
+        # CLI passes print, the MCP server a per-call buffer). See api.py.
+        self.log = log
+        # Repo-relative dir the toolchain runs in. The warm copy is still
         # the whole repo (tests_file and the result file stay repo-relative),
         # but install/build/smoke/test all execute HERE, so a package nested
         # inside a larger repo works. "." for every single-package repo.
         self.project_dir = project_dir
         self.profile = profile
+        # The framework seam. Default vitest so every existing caller keeps
+        # its exact behavior; api.py selects from the profile.
+        self.harness = harness or VitestHarness()
         self.tests_file = (
             tests_file  # where agent tests get injected (helpers in scope)
         )
@@ -201,16 +136,30 @@ class FindingVerifier:
 
     def _run(self, args, cwd):
         # scrubbed_env: model-provider keys never reach executed code — the
-        # gate has no LLM in it, so nothing it spawns needs them.
-        env = scrubbed_env(self.profile.env)
+        # gate has no LLM in it, so nothing it spawns needs them. The warm
+        # root also hosts this run's private npm/pnpm caches (see
+        # scrubbed_env for the isolation-over-warmth tradeoff).
+        env = scrubbed_env(self.profile.env, cache_root=self._warm_root)
         return subprocess.run(
             args, cwd=cwd, env=env, capture_output=True, text=True, timeout=self.timeout
         )
 
+    def _fresh_result_path(self, repo: str) -> str:
+        """Where this run's machine-readable results go — with any stale
+        artifact from a previous finding removed first. A runner that dies
+        before writing (config error, killed on timeout) must yield "no
+        output", never a silently re-read verdict from the last finding."""
+        out = os.path.join(repo, self.harness.result_file)
+        try:
+            os.remove(out)
+        except FileNotFoundError:
+            pass
+        return out
+
     # -- warm base: copy + install + build ONCE ------------------------------
     def _ensure_warm(self) -> None:
         """Build the warm base if it doesn't exist: one copy, one install, one
-        build. Every finding reuses this node_modules; only the tests file
+        build. Every finding reuses this dependency tree; only the tests file
         changes per finding. This is the whole perf win — install/build stop
         being per-finding and become per-run (or, with reuse_warm, per-session).
         """
@@ -245,18 +194,36 @@ class FindingVerifier:
             return
         with open(tpath, encoding="utf-8") as f:
             self._pristine_tests = f.read()
-        # install + build ONCE
-        t0 = time.monotonic()
-        inst = self._run(self.profile.install_cmd, self._workdir(repo))
-        phases.append(f"install {time.monotonic() - t0:.1f}s")
-        if inst.returncode != 0:
-            self._prep_error = f"install failed: {_tail(inst.stderr or inst.stdout)}"
-        elif self.profile.build_cmd:
+        # install + build ONCE. A hang here is the same loud prep-error as a
+        # nonzero exit — the smoke probe below always caught TimeoutExpired,
+        # but install/build let it escape as a traceback through the run.
+        # An empty install_cmd means the profile declares no install step
+        # (python repos: the running environment is assumed provisioned).
+        if self.profile.install_cmd:
             t0 = time.monotonic()
-            bld = self._run(self.profile.build_cmd, self._workdir(repo))
-            phases.append(f"build {time.monotonic() - t0:.1f}s")
-            if bld.returncode != 0:
-                self._prep_error = f"build failed: {_tail(bld.stderr or bld.stdout)}"
+            try:
+                inst = self._run(self.profile.install_cmd, self._workdir(repo))
+                retry = unfrozen_install(self.profile.install_cmd)
+                if inst.returncode != 0 and retry is not None:
+                    # stale lockfile, most likely — degrade to the permissive
+                    # install rather than benching the run, but say so out loud.
+                    self.log("  install: frozen lockfile install failed; "
+                             "retrying with --no-frozen-lockfile")
+                    inst = self._run(retry, self._workdir(repo))
+                phases.append(f"install {time.monotonic() - t0:.1f}s")
+                if inst.returncode != 0:
+                    self._prep_error = f"install failed: {_proc_tail(inst)}"
+            except subprocess.TimeoutExpired:
+                self._prep_error = f"install did not finish within {self.timeout}s"
+        if not self._prep_error and self.profile.build_cmd:
+            t0 = time.monotonic()
+            try:
+                bld = self._run(self.profile.build_cmd, self._workdir(repo))
+                phases.append(f"build {time.monotonic() - t0:.1f}s")
+                if bld.returncode != 0:
+                    self._prep_error = f"build failed: {_proc_tail(bld)}"
+            except subprocess.TimeoutExpired:
+                self._prep_error = f"build did not finish within {self.timeout}s"
         # functional smoke probe: prove the runner starts before judging
         # anything. An exit code can lie across toolchain versions; a probe
         # that actually launches the runner cannot.
@@ -268,13 +235,13 @@ class FindingVerifier:
                 if smoke.returncode != 0:
                     self._prep_error = (
                         "environment smoke probe failed: "
-                        f"{_tail(smoke.stderr or smoke.stdout)}"
+                        f"{_proc_tail(smoke)}"
                     )
             except subprocess.TimeoutExpired:
                 self._prep_error = (
                     f"environment smoke probe did not finish within {self.timeout}s"
                 )
-        print("  warm base: " + ", ".join(phases))
+        self.log("  warm base: " + ", ".join(phases))
         self._warm_repo = repo
 
     def close(self) -> None:
@@ -286,8 +253,8 @@ class FindingVerifier:
 
     def classify(self, finding: ReviewFinding) -> ReviewFinding:
         """Inject this finding's test into the warm base's pristine tests file
-        and run ONLY it. Reuses the shared node_modules; resets the tests file to
-        pristine first so no finding sees another's injected test."""
+        and run ONLY it. Reuses the shared dependency tree; resets the tests
+        file to pristine first so no finding sees another's injected test."""
         if finding.covered_by_existing:
             finding.status = "skipped_covered"
             return finding
@@ -296,30 +263,29 @@ class FindingVerifier:
             finding.status = "broken_test"
             finding.observed = self._prep_error
             return finding
-        title = _test_title(finding.test_code)
+        title = self.harness.test_title(finding.test_code or "")
         if not title:
             finding.status = "broken_test"
             finding.observed = "could not read test name"
             return finding
-        injected, err = _inject(self._pristine_tests or "", finding.test_code)
+        injected, err = self.harness.inject(self._pristine_tests or "",
+                                            finding.test_code or "")
         if injected is None:
             finding.status = "broken_test"
             finding.observed = err
             return finding
         repo = self._warm_repo
+        assert repo is not None  # set by _ensure_warm when prep succeeded
         tpath = os.path.join(repo, self.tests_file)
         try:
             # write pristine + THIS finding's test (clean start every time)
             with open(tpath, "w", encoding="utf-8") as f:
                 f.write(injected)
-            out = os.path.join(repo, self._RESULT)
-            # run ONLY the injected test by name, so pre-existing suite failures
-            # can never be misattributed to this finding.
+            out = self._fresh_result_path(repo)
             try:
                 self._run(
-                    self.profile.test_base
-                    + ["-t", title, "--typecheck.enabled=false",
-                       "--reporter=json", f"--outputFile={out}"],
+                    self.harness.serial_command(self.profile, self.tests_file,
+                                                title, out),
                     self._workdir(repo),
                 )
             except subprocess.TimeoutExpired:
@@ -328,7 +294,7 @@ class FindingVerifier:
                     f"did not finish within {self.timeout}s (subprocess limit)"
                 )
                 return finding
-            finding.status, finding.observed = self._read(out)
+            finding.status, finding.observed = self.harness.read_verdict(out)
             return finding
         finally:
             # restore pristine so the base is clean for the next finding/run
@@ -336,82 +302,33 @@ class FindingVerifier:
                 with open(tpath, "w", encoding="utf-8") as f:
                     f.write(self._pristine_tests)
 
+    # -- verdict brain back-compat -------------------------------------------
+    # The classification and parsing bodies moved into VitestHarness; these
+    # staticmethods stay because tests (and the determinism harness) pin the
+    # names, and because they document that the DEFAULT gate is vitest.
+
     @staticmethod
     def _classify_failure(fm: str) -> tuple[str, str]:
-        """One failed assertionResult -> (kind, first_line). The single
-        shared brain for serial and batched paths — they must never diverge.
-
-        Only a named AssertionError counts as an assertion failure. The old
-        heuristic also accepted any message containing "expected" — and
-        "Unexpected token", a parse error, contains that substring, so a
-        garbage test could mint a confirmed_gap. A runtime crash that is
-        really the tool's fault still surfaces (as broken_test, where a human
-        reads it); the gate stays conservative because an inflated gap is the
-        one error class this design must never produce. vitest's assertion
-        layer (@vitest/expect, chai, node:assert) names AssertionError in
-        every genuine expect/assert failure."""
-        first = fm.strip().splitlines()[0][:200] if fm.strip() else ""
-        if "timed out" in fm.lower():
-            return "timeout", first
-        # vitest 3 serializes its per-test timeout through a stack-donor
-        # placeholder: the reported failureMessage is the placeholder's stack,
-        # headed "Error: STACK_TRACE_ERROR", and the human timeout message
-        # does not survive into the JSON reporter. The placeholder header IS
-        # the timeout signal. A user test could only fake it by throwing that
-        # exact message, and the misfile would land in timed_out (ambiguity,
-        # a human's job) — the conservative direction, never a minted gap.
-        if first == "Error: STACK_TRACE_ERROR":
-            return "timeout", "test timed out (vitest 3 placeholder serialization)"
-        if "AssertionError" in fm:
-            return "assertion", first
-        return "load_error", first
+        return _VITEST.classify_failure(fm)
 
     @staticmethod
     def _read(out: str) -> tuple[str, str]:
-        if not os.path.isfile(out):
-            return "broken_test", "test run produced no JSON output"
-        try:
-            data = json.loads(open(out, encoding="utf-8").read())
-        except Exception as e:  # noqa: BLE001
-            return "broken_test", f"could not parse results: {e}"
-        # find the newly-added test's result; distinguish assertion-fail from load error
-        failed_assertion = None
-        load_error = None
-        timeout_msg = None
-        ran = 0
-        for suite in data.get("testResults", []):
-            msg = suite.get("message") or ""
-            if suite.get("status") == "failed" and not suite.get("assertionResults"):
-                load_error = msg  # suite failed to collect -> broken test
-            for t in suite.get("assertionResults", []):
-                if t.get("status") in ("passed", "failed"):
-                    ran += 1
-                if t.get("status") == "failed":
-                    fm = (t.get("failureMessages") or [""])[0]
-                    kind, first = FindingVerifier._classify_failure(fm)
-                    if kind == "timeout":
-                        timeout_msg = first
-                    elif kind == "assertion":
-                        failed_assertion = first
-                    else:
-                        load_error = first
-        if failed_assertion:
-            return "confirmed_gap", failed_assertion
-        if timeout_msg:
-            return "timed_out", timeout_msg
-        if load_error:
-            return "broken_test", load_error
-        if ran == 0:
-            return "broken_test", "injected test did not run (name match failed)"
-        return "handled", "test passed — the tool already does this"
+        return _VITEST.read_verdict(out)
 
     # -- batched gate ---------------------------------------------------------
 
     _MARK = "___ab{i}___"
+    _MARK_PREFIX = "___ab"
+    # anything in a PROPOSAL that looks like one of our marks. Attribution
+    # matches marks by substring in the executed test's title, so a proposal
+    # whose own title carries a lookalike (___ab0___) would hijack finding
+    # 0's verdict. Stripping the pattern before the gate adds its own mark
+    # guarantees the only mark in any executed title is gate-injected.
+    _MARK_RE = re.compile(r"___ab\d+___")
 
     def _classify_batch(self, findings: list[ReviewFinding]) -> set[int]:
         """Inject every finding's test at once (uniquely marked titles), run
-        vitest ONCE filtered to the mark, attribute results per finding.
+        the suite ONCE filtered to the mark, attribute results per finding.
 
         Returns the indexes it could NOT confidently attribute — the caller
         re-runs those through the proven serial path. Batch is an
@@ -435,22 +352,18 @@ class FindingVerifier:
         content = self._pristine_tests or ""
         marked: dict[int, str] = {}
         for i, f in pending.items():
-            title = _test_title(f.test_code)
+            title = self.harness.test_title(f.test_code or "")
             if not title:
                 continue  # serial path will report it properly
             mark = self._MARK.format(i=i)
-            # mark the title inside the test(...) opener itself — a naive
-            # replace can hit a lookalike (comment, string) elsewhere and
-            # leave the real test unmarked -> unattributed -> serial fallback
-            code, n = re.subn(
-                r"""((?:test|it)\(\s*[`'"])""",
-                lambda m: m.group(1) + mark + " ",
-                f.test_code,
-                count=1,
-            )
-            if not n:
+            # The proposal is de-marked first (see _MARK_RE) so it cannot
+            # smuggle another finding's mark into its own title; the harness
+            # then stamps the gate's own mark into the test opener.
+            code = self.harness.mark_title(
+                self._MARK_RE.sub("", f.test_code or ""), mark)
+            if code is None:
                 continue
-            injected, _err = _inject(content, code)
+            injected, _err = self.harness.inject(content, code)
             if injected is None:
                 continue
             content, marked[i] = injected, mark
@@ -458,16 +371,16 @@ class FindingVerifier:
             return set(pending)
 
         repo = self._warm_repo
+        assert repo is not None  # set by _ensure_warm when prep succeeded
         tpath = os.path.join(repo, self.tests_file)
-        out = os.path.join(repo, self._RESULT)
         try:
             with open(tpath, "w", encoding="utf-8") as fh:
                 fh.write(content)
+            out = self._fresh_result_path(repo)
             try:
                 self._run(
-                    self.profile.test_base
-                    + ["-t", "___ab", "--typecheck.enabled=false",
-                       "--reporter=json", f"--outputFile={out}"],
+                    self.harness.batch_command(self.profile, self.tests_file,
+                                               self._MARK_PREFIX, out),
                     self._workdir(repo),
                 )
             except subprocess.TimeoutExpired:
@@ -489,33 +402,27 @@ class FindingVerifier:
     ) -> set[int]:
         """Map batched results back to findings. Only a finding whose marked
         test demonstrably RAN gets a verdict here; everything else is left
-        for serial. Verdict logic is the same shared brain as serial."""
-        if not os.path.isfile(out):
+        for serial. Verdict logic is the same shared brain as serial (the
+        harness's classify_failure)."""
+        results = self.harness.read_batch(out)
+        if results is None:
             return set()
-        try:
-            with open(out, encoding="utf-8") as fh:
-                data = json.load(fh)
-        except Exception:  # noqa: BLE001
-            return set()
-        # collect every assertion whose title carries one of our marks
-        per: dict[int, list[dict]] = {}
-        for suite in data.get("testResults", []):
-            for t in suite.get("assertionResults", []):
-                title = t.get("title") or t.get("fullName") or ""
-                for i, mark in marked.items():
-                    if mark in title:
-                        per.setdefault(i, []).append(t)
+        # collect every executed test whose title carries one of our marks
+        per: dict[int, list] = {}
+        for r in results:
+            for i, mark in marked.items():
+                if mark in r.title:
+                    per.setdefault(i, []).append(r)
         done: set[int] = set()
-        for i, results in per.items():
+        for i, rs in per.items():
             f = pending[i]
             gap = timeout = load = None
             ran = 0
-            for t in results:
-                if t.get("status") in ("passed", "failed"):
+            for r in rs:
+                if r.status in ("passed", "failed"):
                     ran += 1
-                if t.get("status") == "failed":
-                    fm = (t.get("failureMessages") or [""])[0]
-                    kind, first = self._classify_failure(fm)
+                if r.status == "failed":
+                    kind, first = self.harness.classify_failure(r.failure)
                     if kind == "timeout":
                         timeout = first
                     elif kind == "assertion":
@@ -567,7 +474,7 @@ class FindingVerifier:
                 eligible = sum(
                     1 for f in review.findings if not f.covered_by_existing
                 )
-                print(
+                self.log(
                     f"  gate: batch {t_batch:.1f}s"
                     + (
                         f" + serial fallback {t_serial:.1f}s for "

@@ -1,26 +1,16 @@
-"""The JS sibling of PytestVerifier: it runs a pnpm/npm/yarn/bun + vitest suite.
+"""The vitest facts of the review path: repo profiles and execution helpers.
 
-Same thesis, different runtime. For every proposal that carries a code change,
-this copies the repo to a throwaway directory, applies the change, installs,
-builds, and runs vitest. The world decides, not the agent. No LLM in the path.
+RepoProfile exists because a Python repo runs with one command (`pytest`)
+but a JS repo does not: the package manager, whether sibling packages must
+be built first, the project to scope to, and required env all vary per
+repo. Pretending those are universal would make the gate *lie* on the next
+repo. So every such fact is named explicitly in a RepoProfile. Supabase is
+just one profile; a flat single-package repo is another. The harness core
+never changes.
 
-Two deliberate differences from PytestVerifier, both forced by reality:
-
-1. RepoProfile.
-   A Python repo runs with one command (`pytest`). A JS repo does not: the
-   package manager, whether sibling packages must be built first, the project
-   to scope to, and required env all vary per repo. Pretending those are
-   universal would make the verifier *lie* on the next repo. So every such fact
-   is named explicitly in a RepoProfile. Supabase is just one profile; a flat
-   single-package repo is another. The verifier core never changes.
-
-2. Baseline-delta acceptance.
-   PytestVerifier checks `returncode == 0` because agentboard's own suite is
-   green. Real external repos usually are not (some tests are non-hermetic or
-   pre-failing). Absolute-green would reject every proposal forever. So we
-   capture the baseline failing set once, then a change is rejected only if it
-   introduces a NEW failure. It judges the *delta the change caused*, which is
-   the honest question, and still 100% deterministic.
+Alongside the profiles live the execution helpers every runner shares:
+credential scrubbing (scrubbed_env), the frozen-install fallback
+(unfrozen_install), vitest JSON parsing, and error-tail formatting.
 
 Gotchas encoded (each found by actually running it against supabase/mcp):
   - `CI=true` (vitest.setup.ts stats .env.local otherwise; whole suite fails).
@@ -28,36 +18,17 @@ Gotchas encoded (each found by actually running it against supabase/mcp):
   - `vitest run`, never bare `vitest` (bare = watch mode = hangs forever).
   - scope to a hermetic project; e2e/integration need live creds.
   - parse the JSON reporter, never stdout.
+
+The legacy loop-protocol verifier that drove these facts (VitestVerifier,
+with baseline-delta acceptance) lives in
+``agentboard.experimental.verifiers.vitest_verifier``.
 """
 from __future__ import annotations
 
 import json
 import os
-import shutil
 import subprocess
-import tempfile
 from dataclasses import dataclass, field
-
-from ..state import CodeChange, Node, Proposal, Rejection
-
-
-# --- reuse PytestVerifier's edit semantics so behaviour is identical ---------
-
-def _apply(change: CodeChange, work: str) -> tuple[bool, str]:
-    target = os.path.join(work, change.path)
-    if not os.path.isfile(target):
-        return False, f"file not found: {change.path}"
-    with open(target, encoding="utf-8") as f:
-        content = f.read()
-    if change.append is not None:
-        content = content.rstrip() + "\n\n" + change.append + "\n"
-    else:
-        if change.find not in content:
-            return False, f"anchor not found in {change.path}: {change.find!r}"
-        content = content.replace(change.find, change.replace or "", 1)
-    with open(target, "w", encoding="utf-8") as f:
-        f.write(content)
-    return True, ""
 
 
 # --- credential scrubbing ----------------------------------------------------
@@ -73,13 +44,37 @@ def _apply(change: CodeChange, work: str) -> tuple[bool, str]:
 _PROVIDER_CREDENTIALS = ("OPENAI_API_KEY", "ANTHROPIC_API_KEY")
 
 
-def scrubbed_env(profile_env: dict[str, str]) -> dict[str, str]:
+def scrubbed_env(profile_env: dict[str, str],
+                 cache_root: str | None = None) -> dict[str, str]:
     """The subprocess environment for everything the gate executes:
-    os.environ + the profile's env, minus model-provider credentials."""
+    os.environ + the profile's env, minus model-provider credentials.
+
+    cache_root, when given, points the package managers' caches inside the
+    run's own temp area: npm reads npm_config_cache, pnpm reads its
+    store-dir from the same npm-style env (npm_config_store_dir). The
+    sandbox runs model-written install scripts and tests; those must not
+    read or poison the user's shared ~/.npm cache and pnpm store, which
+    every later run (and the user's own shell) trusts. A cold cache per
+    run is the price of that isolation."""
     env = {**os.environ, **profile_env}
     for key in _PROVIDER_CREDENTIALS:
         env.pop(key, None)
+    if cache_root:
+        env["npm_config_cache"] = os.path.join(cache_root, "npm-cache")
+        env["npm_config_store_dir"] = os.path.join(cache_root, "pnpm-store")
     return env
+
+
+def unfrozen_install(install_cmd: list[str]) -> list[str] | None:
+    """The retry command for a failed frozen install: same command with
+    --frozen-lockfile swapped for --no-frozen-lockfile. None when the
+    install was not frozen (nothing to fall back to). The fallback exists
+    because a frozen install fails on a merely stale lockfile, and a stale
+    lockfile must degrade the run (with a printed note), not kill it."""
+    if "--frozen-lockfile" not in install_cmd:
+        return None
+    return ["--no-frozen-lockfile" if a == "--frozen-lockfile" else a
+            for a in install_cmd]
 
 
 # --- the explicit, per-repo facts the verifier cannot guess -----------------
@@ -109,6 +104,12 @@ class RepoProfile:
     # failed"); a probe that RUNS the runner cannot be fooled by log noise.
     # None => skip.
     smoke_cmd: list[str] | None = None
+    # Which framework harness the gate should drive this repo with
+    # ("vitest" | "pytest"). A profile is repo facts, but the commands it
+    # names imply a framework, and the gate needs that named too — see
+    # harness.harness_for_profile. Default keeps every existing profile
+    # (and every hand-built one in tests) on the vitest path.
+    kind: str = "vitest"
 
     # ---- presets for the common cases --------------------------------------
 
@@ -123,6 +124,7 @@ class RepoProfile:
         extra_test_args: list[str] | None = None,
         env: dict[str, str] | None = None,
         pnpm_version: str = "9",
+        frozen: bool = False,
     ) -> "RepoProfile":
         # Every pnpm invocation goes through an explicitly versioned pnpm via
         # npx — never the ambient corepack shim. The version is the repo's own
@@ -142,9 +144,18 @@ class RepoProfile:
         if project:
             test += ["--project", project]
         test += extra_test_args or []
+        # frozen=True (set by build_profile when pnpm-lock.yaml exists): the
+        # sandbox installs exactly the dependency set the repo pins, instead
+        # of --no-frozen-lockfile silently resolving whatever the registry
+        # serves that day — verdicts must not drift with upstream releases.
+        # A stale lockfile is not a dead end: the verifiers retry unfrozen
+        # with a printed note (see unfrozen_install). No lockfile keeps the
+        # permissive install, the only one that can work.
         return cls(
             name=name,
-            install_cmd=pnpm + ["install", "--no-frozen-lockfile"],
+            install_cmd=pnpm + ["install",
+                                "--frozen-lockfile" if frozen
+                                else "--no-frozen-lockfile"],
             build_cmd=pnpm + ["-r", "build"] if build else None,
             test_base=test,
             env={"CI": "true", **(env or {})},
@@ -198,120 +209,6 @@ SUPABASE_MCP.harness_notes = (
 )
 
 
-# --- the verifier ------------------------------------------------------------
-
-class VitestVerifier:
-    """Implements the ``Verifier`` protocol by running a vitest suite."""
-
-    _RESULT_FILE = "agentboard-vitest-result.json"
-
-    def __init__(self, repo_root: str, profile: RepoProfile, timeout: int = 1800):
-        self.repo_root = repo_root
-        self.profile = profile
-        self.timeout = timeout
-        self._baseline: set[str] | None = None  # failing-test ids on the clean repo
-
-    # ---- subprocess + parsing ----------------------------------------------
-
-    def _run(self, args: list[str], cwd: str) -> subprocess.CompletedProcess:
-        env = scrubbed_env(self.profile.env)
-        return subprocess.run(
-            args, cwd=cwd, env=env, capture_output=True, text=True, timeout=self.timeout
-        )
-
-    def _build_and_test(self, repo: str) -> tuple[set[str], dict[str, str], str]:
-        """Install, (build), test. Returns (failing_ids, messages, infra_error).
-
-        infra_error is non-empty only if the run could not produce results at all
-        (install/build blew up, or vitest never wrote JSON) — that's an
-        infrastructure failure, distinct from a test failure.
-        """
-        inst = self._run(self.profile.install_cmd, repo)
-        if inst.returncode != 0:
-            return set(), {}, f"install failed: {_tail(inst.stderr or inst.stdout)}"
-
-        if self.profile.build_cmd:
-            bld = self._run(self.profile.build_cmd, repo)
-            if bld.returncode != 0:
-                return set(), {}, f"build failed: {_tail(bld.stderr or bld.stdout)}"
-
-        out = os.path.join(repo, self._RESULT_FILE)
-        cmd = self.profile.test_base + ["--reporter=json", f"--outputFile={out}"]
-        self._run(cmd, repo)  # non-zero exit is normal when tests fail; we read JSON
-
-        if not os.path.isfile(out):
-            return set(), {}, "test run produced no JSON output"
-        return _parse_vitest_json(out)
-
-    def _ensure_baseline(self) -> set[str]:
-        if self._baseline is None:
-            work = tempfile.mkdtemp(prefix="agentboard_baseline_")
-            try:
-                dst = os.path.join(work, "repo")
-                shutil.copytree(
-                    self.repo_root, dst,
-                    ignore=shutil.ignore_patterns(".git", "node_modules", "dist", "__pycache__"),
-                )
-                failing, _msgs, infra = self._build_and_test(dst)
-                # If the baseline itself can't run, treat as empty and let each
-                # change surface the infra error; don't silently pass everything.
-                self._baseline = failing if not infra else set()
-                self._baseline_infra = infra
-            finally:
-                shutil.rmtree(work, ignore_errors=True)
-        return self._baseline
-
-    def _run_change(self, change: CodeChange) -> tuple[bool, str]:
-        baseline = self._ensure_baseline()
-        work = tempfile.mkdtemp(prefix="agentboard_verify_")
-        try:
-            dst = os.path.join(work, "repo")
-            shutil.copytree(
-                self.repo_root, dst,
-                ignore=shutil.ignore_patterns(".git", "node_modules", "dist", "__pycache__"),
-            )
-            ok, err = _apply(change, dst)
-            if not ok:
-                return False, err
-            failing, msgs, infra = self._build_and_test(dst)
-            if infra:
-                return False, infra
-            new = failing - baseline
-            if new:
-                first = sorted(new)[0]
-                return False, _describe_failure(first, msgs.get(first, ""))
-            return True, ""
-        finally:
-            shutil.rmtree(work, ignore_errors=True)
-
-    # ---- the Verifier protocol ---------------------------------------------
-
-    def verify(
-        self,
-        proposals: list[Proposal],
-        nodes: list[Node],
-        committed: list[Proposal],
-    ) -> tuple[list[Proposal], list[Rejection]]:
-        known_nodes = {n.id for n in nodes}
-        accepted: list[Proposal] = []
-        rejected: list[Rejection] = []
-
-        for p in proposals:
-            if p.node_ref not in known_nodes:
-                rejected.append(Rejection(p, f"references unknown node '{p.node_ref}'"))
-                continue
-            if p.change is None:
-                accepted.append(p)            # schema-level concern, nothing to run
-                continue
-            passed, reason = self._run_change(p.change)
-            if passed:
-                accepted.append(p)
-            else:
-                rejected.append(Rejection(p, reason))
-
-        return accepted, rejected
-
-
 # --- helpers -----------------------------------------------------------------
 
 def _tail(s: str, n: int = 300, head: int = 200) -> str:
@@ -322,6 +219,20 @@ def _tail(s: str, n: int = 300, head: int = 200) -> str:
     if len(s) <= head + n:
         return s
     return s[:head] + "\n  ...\n" + s[-n:]
+
+
+def _proc_tail(p: "subprocess.CompletedProcess") -> str:
+    """Both streams, labeled — never `stderr or stdout`. That pattern hid a
+    real failure on supabase/mcp: npm printed one harmless warning to stderr
+    ('Unknown env config "store-dir"'), stderr was truthy, and the actual
+    error sat unread in stdout. Same lesson as _tail: the part you drop is
+    the part holding the cause."""
+    parts = []
+    if (p.stderr or "").strip():
+        parts.append("stderr: " + _tail(p.stderr))
+    if (p.stdout or "").strip():
+        parts.append("stdout: " + _tail(p.stdout))
+    return "\n  ".join(parts) or "(no output on either stream)"
 
 
 def _parse_vitest_json(path: str) -> tuple[set[str], dict[str, str], str]:
@@ -344,10 +255,3 @@ def _parse_vitest_json(path: str) -> tuple[set[str], dict[str, str], str]:
                 messages[test_id] = (msgs[0] if msgs else "").strip()
     return failing, messages, ""
 
-
-def _describe_failure(test_id: str, message: str) -> str:
-    """Human reason in the PytestVerifier house style: behaviour + assertion."""
-    behavior = test_id.split(" > ")[-1] if test_id else "the test suite"
-    first_line = (message or "").splitlines()[0].strip() if message else ""
-    head = f"broke '{behavior}'"
-    return f"{head} — {first_line[:90]}" if first_line else head

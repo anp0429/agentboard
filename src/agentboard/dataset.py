@@ -114,6 +114,7 @@ def append_run(
     axis: str,
     reviewer_model: str,
     critic_model: str,
+    log=print,
 ) -> int:
     """Append one JSONL row per finding in the run. Returns the row count.
     Never raises into the caller: collection must never break a review."""
@@ -138,9 +139,9 @@ def append_run(
             for row in rows:
                 fh.write(json.dumps(row, ensure_ascii=False) + "\n")
     except OSError as e:
-        print(f"  [warn] dataset: could not write {path}: {e}")
+        log(f"  [warn] dataset: could not write {path}: {e}")
         return 0
-    print(f"  dataset: appended {len(rows)} row(s) to {path}")
+    log(f"  dataset: appended {len(rows)} row(s) to {path}")
     return len(rows)
 
 

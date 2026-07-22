@@ -9,7 +9,9 @@ user config dir."""
 
 import os
 
-from agentboard.config import CONFIG_NAME, load_config, user_config_path
+import pytest
+
+from agentboard.config import CONFIG_NAME, ConfigError, load_config, user_config_path
 
 
 def _write(path, text):
@@ -46,14 +48,31 @@ def test_explicit_config_path_beats_both(tmp_path, monkeypatch):
 
 
 def test_explicit_config_path_missing_is_an_error(tmp_path):
+    # ConfigError, not SystemExit: SystemExit is not an Exception subclass,
+    # so it sailed through the MCP server's except Exception and killed the
+    # whole server over a typo'd --config path.
     repo = tmp_path / "myrepo"
     os.makedirs(repo)
-    try:
+    with pytest.raises(ConfigError, match="not found"):
         load_config(str(repo), str(tmp_path / "nope.toml"))
-    except SystemExit as e:
-        assert "not found" in str(e)
-    else:
-        raise AssertionError("expected SystemExit for missing --config file")
+
+
+def test_missing_config_is_a_friendly_exit_at_the_api_boundary(tmp_path):
+    # The boundary contract: the same friendly message the SystemExit used
+    # to carry, narrated through the log sink, and exit code 1 — the review
+    # could not run, but nobody's process dies.
+    from agentboard.api import ReviewRequest, run_review
+
+    repo = tmp_path / "myrepo"
+    os.makedirs(repo)
+    lines = []
+    result = run_review(
+        ReviewRequest(repo=str(repo), config=str(tmp_path / "nope.toml"),
+                      target="a.ts"),
+        log=lambda *a, **k: lines.append(" ".join(str(x) for x in a)),
+    )
+    assert result.exit_code == 1
+    assert any("nope.toml: file not found" in line for line in lines)
 
 
 def test_no_config_anywhere_yields_defaults(tmp_path, monkeypatch):

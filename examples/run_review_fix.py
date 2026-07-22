@@ -26,12 +26,12 @@ from agentboard.ingestion.intent import resolve_intent
 from agentboard.ingestion.pr_diff import load_pr_diff, diff_blob
 from agentboard.agents.reviewer_agent import ReviewerAgent
 from agentboard.agents.critic_agent import CriticAgent
-from agentboard.agents.fix_agent import FixAgent
+from agentboard.experimental.agents.fix_agent import FixAgent
 from agentboard.verifiers.finding_verifier import FindingVerifier
-from agentboard.verifiers.transition_verifier import TransitionVerifier
+from agentboard.experimental.verifiers.transition_verifier import TransitionVerifier
 from agentboard.verifiers.vitest_verifier import RepoProfile
 from agentboard.review import ReviewRun, render_review_html
-from agentboard.state import CodeChange
+from agentboard.experimental.state import CodeChange
 
 CLONE = os.environ.get("CLONE", "/path/to/your/clone")
 TARGET = os.environ.get(

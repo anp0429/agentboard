@@ -23,8 +23,9 @@ Structure mirrors reviewer_agent: model call split from pure parsing.
 
 from __future__ import annotations
 
+from ..providers import chat_completion
+
 import json
-import os
 
 from ..review import ReviewFinding
 
@@ -116,11 +117,18 @@ def _coverage_digest(prior: list[ReviewFinding]) -> str:
 
 class CriticAgent:
     def __init__(
-        self, model: str = "claude-opus-4-8", client=None, max_tokens: int = 3000
+        self, model: str = "claude-opus-4-8", client=None, max_tokens: int = 3000,
+        log=print,
     ):
         self.model = model
+        # optional provider pin from repo config; ambient env still wins
+        # upstream (api.py resolves precedence before passing it here).
+        self.base_url = ""
         self._client = client
         self.max_tokens = max_tokens
+        # print-shaped narration sink; the caller picks where lines go (the
+        # CLI passes print, the MCP server a per-call buffer). See api.py.
+        self.log = log
         from ..providers import uses_anthropic
         self._is_openai = not uses_anthropic(model)
 
@@ -128,7 +136,7 @@ class CriticAgent:
         if self._client is None:
             from ..providers import client_for
 
-            self._client = client_for(self.model)
+            self._client = client_for(self.model, self.base_url)
         return self._client
 
     def critique(
@@ -143,7 +151,8 @@ class CriticAgent:
         try:
             client = self._client_lazy()
             if self._is_openai:
-                resp = client.chat.completions.create(
+                resp = chat_completion(
+                    client,
                     model=self.model,
                     response_format={"type": "json_object"},
                     # a JSON plan never needs the model's full output ceiling;
@@ -156,7 +165,15 @@ class CriticAgent:
                         {"role": "user", "content": user},
                     ],
                 )
-                data = _loads_gaps_lenient(resp.choices[0].message.content or "{}")
+                content = resp.choices[0].message.content or ""
+                if not content.strip():
+                    # Same silent-starvation mode as the reviewer: an empty
+                    # completion must not read as "the critic found nothing".
+                    reason = getattr(resp.choices[0], "finish_reason", "?")
+                    self.log(f"  [warn] critic: empty completion "
+                             f"(finish_reason={reason}) — the model likely "
+                             f"spent its whole token budget reasoning")
+                data = _loads_gaps_lenient(content or "{}")
             else:
                 resp = client.messages.create(
                     model=self.model,
@@ -170,6 +187,6 @@ class CriticAgent:
                 )
                 data = _loads_gaps_lenient(text)
         except Exception as ex:  # never crash the loop
-            print(f"  [warn] critic: {ex}")
+            self.log(f"  [warn] critic: {ex}")
             return []
         return parse_gaps(data)

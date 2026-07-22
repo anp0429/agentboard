@@ -201,6 +201,9 @@ the calling agent's (and ultimately a human's) job.
 2. Gate. Each test runs against the real code in a clean checkout. The gate
    is deterministic and contains no LLM. Verdicts: `handled`,
    `confirmed_gap`, `broken_test`, `timed_out`, `skipped_covered`.
+   JS/TS repos are gated under vitest; Python repos are now gated under
+   pytest with the same verdict taxonomy. The pytest path is new and
+   should be treated as experimental.
 3. Board. Verdicts render to an HTML review board. A run fingerprint lets any
    two runs be compared with one string.
 4. Audit. A different model flags possible false positives on confirmed gaps.
@@ -239,7 +242,18 @@ export OPENAI_API_KEY=sk-or-...
 # .agentboard.toml
 reviewer_model = "qwen3.6:27b"            # or "moonshotai/kimi-k2.6", etc.
 critic_model = "devstral-small-2"         # a different lineage decorrelates
+base_url = "http://localhost:11434/v1"    # optional: pin this repo's endpoint
 ```
+
+Because one environment variable redefines what every model name means,
+the run log always names the endpoint each model will talk to
+(`reviewer qwen3.6:27b via localhost:11434`), so a stray export from
+another session is visible instead of silent. A repo can also pin its
+endpoint with `base_url` in config (an explicitly set `OPENAI_BASE_URL`
+still wins), and preflight rejects the one unambiguous mistake up front:
+an OpenRouter-shaped key (`sk-or-...`) with no base URL set would only be
+refused by api.openai.com, so the run stops in two seconds with the fix
+instead of failing mid-review.
 
 The design absorbs weaker proposers safely: a proposal that does not
 compile or run is scored against the test (`broken_test`), never against
@@ -327,6 +341,10 @@ then train the proposer on gate outcomes). Rows collected from public repos
 are clean to keep; any future company deployment keeps its own data local and
 never comingled, by design.
 
+The collaboration-loop code that predates the gate (fix agents proposing
+patches, multi-model argument with executed tests as referee) lives under
+`agentboard.experimental` pending that roadmap.
+
 ## Reliability
 
 The classification path is checked for byte-identical verdicts across 1,000
@@ -355,7 +373,9 @@ verdict-identical by fingerprint.
   test file, which can skew results toward `broken_test` until test
   scaffolding is implemented.
 - The audit pass is advisory and not yet load-bearing.
-- Vitest (pnpm or npm) is the supported harness.
+- Vitest (pnpm or npm) is the primary harness. Python/pytest repos are
+  supported with the same verdict taxonomy, but that path is new and
+  experimental.
 - Current vitest is the supported target. Very old checkouts (vitest 0.2x
   era) tend to fail at environment preparation for toolchain reasons that
   predate agentboard; the run reports this as an environment failure rather

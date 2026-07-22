@@ -20,6 +20,8 @@ decides. No model certifies a gap.
 
 from __future__ import annotations
 
+from ..providers import chat_completion
+
 import json
 import os
 
@@ -171,13 +173,20 @@ class ReviewerAgent:
         max_chars: int = 12000,
         harness_notes: str = "",
         axis: str = "default",
+        log=print,
     ):
         self.repo_root = repo_root
         self.target_path = target_path
         self.existing_tests_path = existing_tests_path
         self.model = model
+        # optional provider pin from repo config; ambient env still wins
+        # upstream (api.py resolves precedence before passing it here).
+        self.base_url = ""
         self._client = client
         self.max_chars = max_chars
+        # print-shaped narration sink; the caller picks where lines go (the
+        # CLI passes print, the MCP server a per-call buffer). See api.py.
+        self.log = log
         # Repo-specific test-writing rules (e.g. RepoProfile.harness_notes).
         # Injected into the prompt as data; the prompt stays repo-agnostic.
         self.harness_notes = harness_notes.strip()
@@ -197,7 +206,7 @@ class ReviewerAgent:
         if self._client is None:
             from ..providers import client_for
 
-            self._client = client_for(self.model)
+            self._client = client_for(self.model, self.base_url)
         return self._client
 
     def review(self, intent: str, change: str = "") -> list[ReviewFinding]:
@@ -222,7 +231,8 @@ class ReviewerAgent:
         try:
             client = self._client_lazy()
             if self._is_openai:
-                resp = client.chat.completions.create(
+                resp = chat_completion(
+                    client,
                     model=self.model,
                     response_format={"type": "json_object"},
                     # a JSON plan never needs the model's full output ceiling;
@@ -235,9 +245,19 @@ class ReviewerAgent:
                         {"role": "user", "content": user},
                     ],
                 )
+                content = resp.choices[0].message.content or ""
+                if not content.strip():
+                    # An empty completion is a failure wearing success's
+                    # clothes: a reasoning model can spend the whole token
+                    # budget thinking and return nothing, which downstream
+                    # reads as "0 behaviors" with no hint. Say it loudly.
+                    reason = getattr(resp.choices[0], "finish_reason", "?")
+                    self.log(f"  [warn] reviewer: empty completion "
+                             f"(finish_reason={reason}) — the model likely "
+                             f"spent its whole token budget reasoning")
                 # lenient, not strict: local models behind the same client
                 # sometimes fence their JSON despite response_format.
-                data = _loads_lenient(resp.choices[0].message.content or "{}")
+                data = _loads_lenient(content or "{}")
             else:
                 resp = client.messages.create(
                     model=self.model,
@@ -251,6 +271,6 @@ class ReviewerAgent:
                 )
                 data = _loads_lenient(text)
         except Exception as e:  # never crash the loop
-            print(f"  [warn] reviewer: {e}")
+            self.log(f"  [warn] reviewer: {e}")
             return []
         return parse_review_plan(data)
