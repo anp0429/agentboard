@@ -93,7 +93,11 @@ the diff becomes working tree vs `--base` (default `HEAD`), the sandbox
 executes the same on-disk state it diffed, and `--intent` is required since
 uncommitted work has no commit message to derive intent from. This is the
 mode a coding agent uses mid-session; it is also the default for the MCP
-server below.
+server below. One guard: on a clean checkout (a `gh pr checkout`, a
+committed branch), working-tree-vs-HEAD is a near-empty diff, and a review
+of nothing would still "run" on intent alone. If the worktree diff does not
+touch the target and no `--base` was given, the run aborts and names the
+fix, rather than gating a phantom.
 
 ## Multi-file reviews
 
@@ -206,8 +210,13 @@ the calling agent's (and ultimately a human's) job.
    should be treated as experimental.
 3. Board. Verdicts render to an HTML review board. A run fingerprint lets any
    two runs be compared with one string.
-4. Audit. A different model flags possible false positives on confirmed gaps.
-   The audit is advisory and never changes a verdict.
+4. Precision. Two advisory layers annotate confirmed gaps without touching
+   verdicts. A deterministic pass flags gaps that fail with the verbatim
+   same message: real gaps fail in their own words, artifacts fail in
+   unison, so N identical failures are reported as one suspected setup
+   cause, not N bugs (found the hard way when nine "gaps" shared one
+   unwrapping mistake). Separately, a different model audits each confirmed
+   gap for wrong assertions. Neither ever changes a verdict.
 
 ## Caching and cost
 
@@ -353,6 +362,11 @@ must always classify as a real failure; if an impossible test ever reads as
 passing, CI fails. Batched and serial gate paths are asserted
 verdict-identical by fingerprint.
 
+Environment failures report both output streams, labeled. `stderr or
+stdout` once hid a real install error behind a harmless package-manager
+warning; the stream you drop is the stream holding the cause, so neither
+is dropped.
+
 ## Limitations
 
 - The execution trust model: reviewing a repo runs that repo's code as you.
@@ -381,8 +395,10 @@ verdict-identical by fingerprint.
   predate agentboard; the run reports this as an environment failure rather
   than producing verdicts.
 - pnpm repos run under the version the repo's own config parses: the
-  `packageManager` pin is honored when modern (>= 9), and falls back to a
-  pinned `pnpm@9` for ancient or absent pins that cannot run on current Node.
+  `packageManager` pin is honored when modern (>= 9); with no pin there, a
+  modern pin in `mise.toml` or `.tool-versions` is honored next (pins
+  migrate — supabase/mcp dropped `packageManager` for mise mid-2026); and
+  only then does it fall back to a pinned `pnpm@9`.
   A single hardcoded pin broke in both directions (old pnpm dies on Node 22;
   pnpm 9 rejects a pnpm 10/11 `pnpm-workspace.yaml` config), so the rule is
   "run under the version this config was written for."
