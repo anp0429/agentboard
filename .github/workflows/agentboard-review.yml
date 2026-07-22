@@ -36,16 +36,23 @@ jobs:
           node-version: "22"
 
       - name: Install agentboard
-        # In agentboard's own repo this installs the PR's code (true
-        # dogfooding); in any other repo the local install fails fast and
-        # the fallback pulls the published tool.
-        run: pip install -e . 2>/dev/null || pip install git+https://github.com/anp0429/agentboard
+        # In agentboard's own repo this installs the PR's code with its dev
+        # extras (true dogfooding — the pytest harness needs pytest present,
+        # since the pytest profile assumes a provisioned environment); in any
+        # other repo the local install fails fast and the fallback pulls the
+        # published tool plus a runner.
+        run: pip install -e ".[dev]" 2>/dev/null || pip install pytest git+https://github.com/anp0429/agentboard
 
       - name: Pick a reviewable target from the PR's changed files
         id: target
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        # A target is only reviewable when a tests file can be paired with it:
+        # basename match first (tests/test_<stem>.py, co-located .test.ts),
+        # then import match (this repo names tests by behavior, so the import
+        # statement is the real link). src/ files are preferred; candidates
+        # with no pair are flagged and skipped, never failed on.
         run: |
           changed=$(git diff --name-only "$BASE_SHA...$HEAD_SHA" \
             | grep -E '\.(ts|tsx|js|jsx|mjs|py)$' \
@@ -64,6 +71,10 @@ jobs:
               tf="tests/test_${stem}.py"
             elif [ -f "${dir}/${stem}.test.ts" ]; then
               tf="${dir}/${stem}.test.ts"
+            elif [ -f "${dir}/${stem}.test.js" ]; then
+              tf="${dir}/${stem}.test.js"
+            elif [ -f "${dir}/${stem}.spec.ts" ]; then
+              tf="${dir}/${stem}.spec.ts"
             else
               tf=$(grep -rlE "(from|import)[^#]*\b${stem}\b" tests/ 2>/dev/null | head -1 || true)
             fi
