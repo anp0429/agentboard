@@ -51,13 +51,24 @@ jobs:
             | grep -E '\.(ts|tsx|js|jsx|mjs|py)$' \
             | grep -vE '\.test\.|\.spec\.|/tests?/|__tests__|__init__\.py|conftest|^examples/|^scripts/' \
             || true)
-          target=$(printf '%s\n' "$changed" | grep '^src/' | head -1 || true)
-          if [ -z "$target" ]; then
-            target=$(printf '%s\n' "$changed" | head -1 || true)
-          fi
+          ordered=$( { printf '%s\n' "$changed" | grep '^src/' || true; \
+                       printf '%s\n' "$changed" | grep -v '^src/' || true; } )
+          target=""
+          for f in $ordered; do
+            stem=$(basename "$f")
+            stem="${stem%.*}"
+            dir=$(dirname "$f")
+            if [ -f "tests/test_${stem}.py" ] \
+               || [ -f "${dir}/${stem}.test.ts" ] || [ -f "${dir}/${stem}.test.js" ] \
+               || [ -f "${dir}/${stem}.spec.ts" ]; then
+              target="$f"
+              break
+            fi
+            echo "skip: ${f} (no matching tests file)"
+          done
           echo "target=$target" >> "$GITHUB_OUTPUT"
           if [ -z "$target" ]; then
-            echo "No reviewable source change in this PR; skipping quietly."
+            echo "No changed source file has a matching tests file; skipping quietly."
           fi
 
       - name: Review
