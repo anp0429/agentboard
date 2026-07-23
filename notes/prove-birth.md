@@ -68,13 +68,48 @@ were real again — and one was a hole in that day's own fix:
 The fifth was an opinion about output formatting, kept in the specimen
 jar for the assertion-quality work.
 
+## Round three (run fingerprint e4a011add5ff924c)
+
+The first fix of the trust layer was giving the reviewer the target's
+real import surface — module path plus public names, read from the AST —
+after 33 and then 29 proposals had died of hallucinated imports in the
+first two rounds. The next self-review ran with that data in the prompt:
+**zero broken proposals.** Every test the model wrote imported correctly,
+executed, and reached a verdict. One prompt line of deterministic facts
+retired the entire failure class.
+
+And then the recursion went one turn deeper: with imports finally
+working, the freed-up proposals interrogated the newest function in the
+repo — `import_surface` itself — and found five real gaps in its model
+of "importable," every one flagged likely_real by the advisory auditor:
+
+1. Annotated constants (`ENABLED: bool = True`) are bindings; the first
+   version only read plain assignments.
+2. Tuple and compound assignments (`FIRST, SECOND = 1, 2`) bind every
+   name; the first version saw none of them.
+3. Lowercase public names (`router = APIRouter()`) are exactly what real
+   tests import; an ALL-CAPS filter excluded them.
+4. A package `__init__.py`'s re-exports (`from .mod import Thing`) are
+   the most common public surface in Python packaging; imports were
+   ignored entirely.
+5. Namespace packages (PEP 420) have no `__init__.py`, so requiring one
+   at every level truncated `company.product.feature` to a path that
+   does not import.
+
+Our own unit test had blessed `src.pkg.mod` as a module path; the review
+corrected the test too — `pkg.mod` is what pip installs. All five fixed
+the same hour, each with the review's scenario as a regression test.
+
 ## The ledger
 
-Eleven real defects found by the tool in and around its own code in one
-day, four of them in the verdict path itself, one of them in a fix made
-hours earlier. Every one is now a named test in the suite. The merge of
-the `prove` feature was blocked, by rule, until the tool's own verdict on
-its own diff came back clean of real gaps — prove gated its own birth.
+Sixteen real defects found by the tool in and around its own code in one
+day, across three self-review rounds: four in the verdict path itself,
+one in a fix made hours earlier, and five in the very function built to
+fix the reviewer's imports. Broken proposals went 33, 29, 0 across the
+rounds. Every defect is now a named test in the suite. The merge of the
+`prove` feature was blocked, by rule, until the tool's own verdict on its
+own diff came back clean of real gaps — prove gated its own birth, and
+then kept gating its own growth.
 
 None of this required trusting a model's opinion. Each finding above was
 a test that compiled, ran, and failed against the real code, and each

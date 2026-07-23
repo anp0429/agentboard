@@ -115,23 +115,68 @@ def import_surface(repo_root: str, target_rel: str) -> str:
             tree = ast.parse(fh.read())
     except (OSError, SyntaxError, ValueError):
         return ""
-    names = []
+    # Name collection: every public top-level BINDING is importable, and
+    # the gate proved the narrow first version wrong five ways in one run
+    # (fingerprint e4a011add5ff924c): annotated constants, compound and
+    # tuple assignments, lowercase publics like `router`, __init__
+    # re-exports, namespace-package paths.
+    is_init = os.path.basename(target_rel) == "__init__.py"
+    names: list[str] = []
+
+    def _bind(name: str) -> None:
+        if name and not name.startswith("_") and name not in names:
+            names.append(name)
+
+    def _target_names(t) -> list[str]:
+        if isinstance(t, ast.Name):
+            return [t.id]
+        if isinstance(t, (ast.Tuple, ast.List)):
+            out: list[str] = []
+            for e in t.elts:
+                out.extend(_target_names(e))
+            return out
+        if isinstance(t, ast.Starred):
+            return _target_names(t.value)
+        return []
+
     for node in tree.body:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef,
                              ast.ClassDef)):
-            if not node.name.startswith("_"):
-                names.append(node.name)
+            _bind(node.name)
         elif isinstance(node, ast.Assign):
             for t in node.targets:
-                if isinstance(t, ast.Name) and t.id.isupper()                         and not t.id.startswith("_"):
-                    names.append(t.id)
-    parts = [os.path.basename(target_rel)[: -len(".py")]]
+                for nm in _target_names(t):
+                    _bind(nm)
+        elif isinstance(node, ast.AnnAssign):
+            # ENABLED: bool = True binds; a bare `x: int` annotation
+            # does not exist at runtime and is excluded
+            if node.value is not None and isinstance(node.target, ast.Name):
+                _bind(node.target.id)
+        elif is_init and isinstance(node, (ast.Import, ast.ImportFrom)):
+            # a package __init__'s re-exports ARE its public surface;
+            # regular modules' imports are dependencies, not API, and
+            # stay out
+            for a in node.names:
+                if a.name == "*":
+                    continue
+                _bind(a.asname or a.name.split(".")[0])
+
+    # Module path, best effort for real layouts: walk up through
+    # identifier-named directories (namespace packages have no
+    # __init__.py, PEP 420), then drop a topmost src/lib segment, which
+    # is a source ROOT, not a package. Requiring __init__.py at every
+    # level truncated `company.product.feature` to `product.feature`.
+    stem = os.path.basename(target_rel)[: -len(".py")]
+    parts = [] if stem == "__init__" else [stem]
     d = os.path.dirname(target_rel)
-    while d and os.path.isfile(os.path.join(repo_root, d, "__init__.py")):
-        parts.append(os.path.basename(d))
+    while d:
+        seg = os.path.basename(d)
+        if not seg.isidentifier():
+            break
+        parts.append(seg)
         d = os.path.dirname(d)
-    if parts and parts[0] == "__init__":
-        parts.pop(0)  # a package's import path is the package, full stop
+    while parts and parts[-1] in ("src", "lib"):
+        parts.pop()
     if not parts:
         return ""
     module = ".".join(reversed(parts))
