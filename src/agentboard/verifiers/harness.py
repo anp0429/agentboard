@@ -410,6 +410,81 @@ class VitestHarness(Harness):
                     if _shared(best) > len(repo):
                         return os.path.relpath(best, repo)
 
+            # 3.5 IMPORT MATCHING (the gauntlet's first stranger-repo lesson,
+            # unjs/ufo run 1): basename conventions cannot survive human
+            # naming — src/utils.ts is tested by test/utilities.test.ts.
+            # The pytest lane already learned this and matches by import;
+            # this is the TS spelling. PATH match first (a test importing
+            # ".../<base>" names its target outright, unjs/defu style);
+            # then NAME match (a test importing the target's exported
+            # identifiers through a barrel, unjs/ufo style). Deterministic
+            # regexes over real files — no model anywhere near resolution.
+            candidates: list[str] = []
+            for pat in (f"**/tests/**/*.test{suffix}",
+                        f"**/test/**/*.test{suffix}",
+                        f"**/__tests__/**/*.test{suffix}",
+                        f"**/*.test{suffix}"):
+                candidates += _glob.glob(os.path.join(repo, pat),
+                                         recursive=True)
+            candidates = sorted({c for c in candidates
+                                 if "node_modules" not in c})[:400]
+
+            def _read(p: str) -> str:
+                try:
+                    with open(p, encoding="utf-8", errors="replace") as fh:
+                        return fh.read(65536)
+                except OSError:
+                    return ""
+
+            path_re = re.compile(
+                r"""(?:from\s+|require\(\s*)['"][^'"]*/"""
+                + re.escape(base)
+                + r"""(?:\.[cm]?[jt]sx?)?['"]""")
+            path_hits = [c for c in candidates if path_re.search(_read(c))]
+            if len(path_hits) == 1:
+                return os.path.relpath(path_hits[0], repo)
+            if len(path_hits) > 1:
+                def _shared_p(h: str) -> int:
+                    return len(os.path.commonpath(
+                        [target_dir, os.path.dirname(h)]))
+                best = max(path_hits, key=_shared_p)
+                if _shared_p(best) > len(repo):
+                    return os.path.relpath(best, repo)
+
+            exported = set(re.findall(
+                r"^export\s+(?:async\s+)?(?:function|const|let|var|class|"
+                r"enum)\s+([A-Za-z_$][\w$]*)",
+                _read(os.path.join(repo, target)), re.M))
+            for grp in re.findall(r"^export\s*\{([^}]*)\}",
+                                  _read(os.path.join(repo, target)), re.M):
+                for nm in grp.split(","):
+                    nm = nm.strip().split(" as ")[-1].strip()
+                    if nm:
+                        exported.add(nm)
+            if exported:
+                scored: list[tuple[int, str]] = []
+                for c in candidates:
+                    imported: set[str] = set()
+                    for grp in re.findall(r"import\s*\{([^}]*)\}",
+                                          _read(c)):
+                        for nm in grp.split(","):
+                            nm = nm.strip().split(" as ")[0].strip()
+                            if nm:
+                                imported.add(nm)
+                    overlap = len(exported & imported)
+                    if overlap:
+                        scored.append((overlap, c))
+                if scored:
+                    scored.sort(key=lambda t: (-t[0], t[1]))
+                    top, runner_up = scored[0], (scored[1]
+                                                 if len(scored) > 1 else None)
+                    # accept only a CLEAR winner: at least two of the
+                    # target's names, and strictly more than second place —
+                    # a tie is ambiguity, and ambiguity means ask, not guess
+                    if top[0] >= 2 and (runner_up is None
+                                        or top[0] > runner_up[0]):
+                        return os.path.relpath(top[1], repo)
+
             # 4. sole test file in the target's own directory. Covers the common
             # one-suite-per-module-directory layout that neither co-location nor
             # basename matching reaches (agentboard's own demo fixture: a
