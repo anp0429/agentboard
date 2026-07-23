@@ -22,6 +22,7 @@ from __future__ import annotations
 
 from ..providers import chat_completion
 
+import ast
 import json
 import os
 
@@ -97,6 +98,51 @@ Output ONLY JSON:
     "test_code": "<a complete test in the existing harness style, or null if covered>"
   }}
 ]}}"""
+
+
+def import_surface(repo_root: str, target_rel: str) -> str:
+    """Deterministic prompt DATA for Python targets: the module path a test
+    must import and the public names that actually exist. Exists because
+    the reviewer, given only source text, invented `_targets_from_diff`
+    in agentboard.cli when the real names were public in agentboard.config
+    — 33 proposals died of hallucinated imports in one self-review run.
+    Facts from the ast, not judgment; the prompt stays repo-agnostic."""
+    if not target_rel.endswith(".py"):
+        return ""
+    try:
+        with open(os.path.join(repo_root, target_rel),
+                  encoding="utf-8", errors="replace") as fh:
+            tree = ast.parse(fh.read())
+    except (OSError, SyntaxError, ValueError):
+        return ""
+    names = []
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef,
+                             ast.ClassDef)):
+            if not node.name.startswith("_"):
+                names.append(node.name)
+        elif isinstance(node, ast.Assign):
+            for t in node.targets:
+                if isinstance(t, ast.Name) and t.id.isupper()                         and not t.id.startswith("_"):
+                    names.append(t.id)
+    parts = [os.path.basename(target_rel)[: -len(".py")]]
+    d = os.path.dirname(target_rel)
+    while d and os.path.isfile(os.path.join(repo_root, d, "__init__.py")):
+        parts.append(os.path.basename(d))
+        d = os.path.dirname(d)
+    if parts and parts[0] == "__init__":
+        parts.pop(0)  # a package's import path is the package, full stop
+    if not parts:
+        return ""
+    module = ".".join(reversed(parts))
+    listed = ", ".join(names) if names else "(no public top-level names)"
+    return (
+        f"IMPORT SURFACE ({target_rel}) — importable as `{module}`. "
+        f"Public top-level names: {listed}. In every proposed test, import "
+        f"the target ONLY via this module path and ONLY these names; never "
+        f"invent private helpers, other module paths, or fixtures that are "
+        f"not defined inside your own test."
+    )
 
 
 def _loads_lenient(text: str) -> dict:
@@ -213,6 +259,7 @@ class ReviewerAgent:
     def review(self, intent: str, change: str = "") -> list[ReviewFinding]:
         source = self._read(self.target_path)[: self.max_chars]
         tests = self._read(self.existing_tests_path)[: self.max_chars]
+        surface = import_surface(self.repo_root, self.target_path)
         change_block = (
             f"WHAT THIS PR CHANGED (review THIS against the intent, not the whole file):\n"
             f"```\n{change}\n```\n\n"
@@ -223,6 +270,7 @@ class ReviewerAgent:
             f"{change_block}"
             f"SOURCE FILE ({self.target_path}):\n```\n{source}\n```\n\n"
             f"EXISTING TESTS ({self.existing_tests_path}):\n```\n{tests}\n```"
+            + (f"\n\n{surface}" if surface else "")
             + (f"\n\n{self._axis_directive}" if self._axis_directive else "")
         )
         notes = (

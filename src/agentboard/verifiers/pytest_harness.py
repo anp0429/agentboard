@@ -200,6 +200,22 @@ class PytestHarness(Harness):
         r"^\S+:\d+:\s+"
         r"([A-Za-z_][\w.]*(?:Error|Exception)|Failed|KeyboardInterrupt)$")
 
+    def failure_headline(self, fm: str) -> str:
+        """The line a human needs FIRST: the exception actually raised
+        (the last raising-position line in the report), else the report's
+        first line. Junit setup errors lead with the coordinate ("failed
+        on setup with 'file X, line N'") while the ImportError that
+        explains everything sits buried below — the gate's own boards
+        proved how unreadable that is at scale."""
+        best = ""
+        for line in fm.splitlines():
+            st = line.strip()
+            if self._EXC_LINE.match(st) or self._EXC_TAIL.match(st):
+                best = st
+        if best:
+            return re.sub(r"^E\s+", "", best)[:200]
+        return fm.strip().splitlines()[0][:200] if fm.strip() else ""
+
     def classify_failure(self, fm: str) -> tuple[str, str]:
         """One failure report -> (kind, first_line). Only the RAISED
         exception decides, read from the last line that names one in
@@ -257,8 +273,9 @@ class PytestHarness(Harness):
         for tc in root.iter("testcase"):
             status, fm = self._case(tc)
             if status == "error":
-                # collection failure / setup error: the test never ran
-                load_error = fm.strip().splitlines()[0][:200] if fm.strip() else ""
+                # collection failure / setup error: the test never ran.
+                # Cause first: the raised exception, not the coordinate.
+                load_error = self.failure_headline(fm)
                 continue
             if status == "skipped":
                 # A skipped injected test verified nothing. The verdict is
@@ -277,7 +294,7 @@ class PytestHarness(Harness):
                 elif kind == "assertion":
                     failed_assertion = first
                 else:
-                    load_error = first
+                    load_error = self.failure_headline(fm)
         # same verdict priority as every harness: the strongest evidence
         # wins, and an empty run means the selection failed, not the tool.
         if failed_assertion:

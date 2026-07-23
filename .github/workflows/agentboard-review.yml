@@ -48,11 +48,12 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        # A target is only reviewable when a tests file can be paired with it:
-        # basename match first (tests/test_<stem>.py, co-located .test.ts),
-        # then import match (this repo names tests by behavior, so the import
-        # statement is the real link). src/ files are preferred; candidates
-        # with no pair are flagged and skipped, never failed on.
+        # The workflow picks only the TARGET. Tests resolution belongs to
+        # the library (ast import matching, diff fallback, dir fallback):
+        # a duplicated grep picker here rotted the moment the library
+        # improved, and fed the gate a tests file that collected nothing
+        # (the Jul 22 smoke failure). One core, thin adapters; adapters
+        # never carry a copy of core logic. src/ files are preferred.
         run: |
           changed=$(git diff --name-only "$BASE_SHA...$HEAD_SHA" \
             | grep -E '\.(ts|tsx|js|jsx|mjs|py)$' \
@@ -60,37 +61,12 @@ jobs:
             || true)
           ordered=$( { printf '%s\n' "$changed" | grep '^src/' || true; \
                        printf '%s\n' "$changed" | grep -v '^src/' || true; } )
-          target=""
-          tests=""
-          for f in $ordered; do
-            stem=$(basename "$f")
-            stem="${stem%.*}"
-            dir=$(dirname "$f")
-            tf=""
-            if [ -f "tests/test_${stem}.py" ]; then
-              tf="tests/test_${stem}.py"
-            elif [ -f "${dir}/${stem}.test.ts" ]; then
-              tf="${dir}/${stem}.test.ts"
-            elif [ -f "${dir}/${stem}.test.js" ]; then
-              tf="${dir}/${stem}.test.js"
-            elif [ -f "${dir}/${stem}.spec.ts" ]; then
-              tf="${dir}/${stem}.spec.ts"
-            else
-              tf=$(grep -rlE "(from|import)[^#]*\b${stem}\b" tests/ 2>/dev/null | head -1 || true)
-            fi
-            if [ -n "$tf" ]; then
-              target="$f"
-              tests="$tf"
-              break
-            fi
-            echo "skip: ${f} (no matching tests file)"
-          done
+          target=$(printf '%s\n' "$ordered" | head -1)
           echo "target=$target" >> "$GITHUB_OUTPUT"
-          echo "tests=$tests" >> "$GITHUB_OUTPUT"
           if [ -n "$target" ]; then
-            echo "picked: ${target} with tests ${tests}"
+            echo "picked: ${target} (tests file resolved by the library)"
           else
-            echo "No changed source file has a matching tests file; skipping quietly."
+            echo "No changed source file; skipping quietly."
           fi
 
       - name: Review
@@ -102,12 +78,10 @@ jobs:
           # Filenames are PR-controlled data. Passing through env (not inline
           # expression interpolation) keeps shell metacharacters inert.
           TARGET: ${{ steps.target.outputs.target }}
-          TESTS: ${{ steps.target.outputs.tests }}
         run: |
           agentboard review \
             --repo . \
             --target "$TARGET" \
-            --tests "$TESTS" \
             --base "$BASE_SHA" \
             --head "$HEAD_SHA" \
             --json-out agentboard-run.json \

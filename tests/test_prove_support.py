@@ -120,3 +120,39 @@ def test_untracked_source_files_are_named_not_silently_ignored(repo):
     (repo / "test_new.py").write_text("def test_n(): pass\n")
     (repo / "notes.md").write_text("hi\n")
     assert untracked_source_files(str(repo)) == ["brand_new.py"]
+
+
+def test_import_surface_names_the_module_and_public_names(tmp_path):
+    from agentboard.agents.reviewer_agent import import_surface
+    pkg = tmp_path / "src" / "pkg"
+    pkg.mkdir(parents=True)
+    (tmp_path / "src" / "__init__.py").write_text("")
+    (pkg / "__init__.py").write_text("")
+    (pkg / "mod.py").write_text(
+        "CONST = 1\n_hidden = 2\n\n"
+        "def public_fn():\n    pass\n\n"
+        "def _private_fn():\n    pass\n\n"
+        "class Thing:\n    pass\n"
+    )
+    out = import_surface(str(tmp_path), "src/pkg/mod.py")
+    assert "`src.pkg.mod`" in out
+    assert "public_fn" in out and "Thing" in out and "CONST" in out
+    assert "_private_fn" not in out and "_hidden" not in out
+
+
+def test_import_surface_for_package_init_is_the_package(tmp_path):
+    from agentboard.agents.reviewer_agent import import_surface
+    pkg = tmp_path / "acme"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("def hello():\n    pass\n")
+    out = import_surface(str(tmp_path), "acme/__init__.py")
+    assert "`acme`" in out
+    assert "hello" in out
+
+
+def test_import_surface_is_empty_for_non_python_and_unparsable(tmp_path):
+    from agentboard.agents.reviewer_agent import import_surface
+    (tmp_path / "a.ts").write_text("export const a = 1\n")
+    (tmp_path / "bad.py").write_text("def broken(:\n")
+    assert import_surface(str(tmp_path), "a.ts") == ""
+    assert import_surface(str(tmp_path), "bad.py") == ""
