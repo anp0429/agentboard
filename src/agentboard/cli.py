@@ -224,6 +224,76 @@ def review(args) -> int:
     return run_review(ReviewRequest.from_namespace(args)).exit_code
 
 
+
+def prove(args) -> int:
+    """The author-side verb: zero flags, one verdict line first. A thin
+    adapter — plan_prove fills in what the user didn't type, run_review
+    does everything, prove.verdict_block words the result honestly."""
+    from .api import ReviewRequest, run_review
+    from .config import ConfigError, load_config
+    from .prove import (
+        NO_KEY_SCREEN, exit_code_for, gap_details, llm_configured,
+        plan_prove, verdict_block,
+    )
+
+    import subprocess
+
+    repo = os.path.abspath(os.path.expanduser(args.repo))
+    r = subprocess.run(["git", "-C", repo, "rev-parse", "--show-toplevel"],
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+        print("STOPPED: not inside a git repository — prove reviews a "
+              "repo's changes; cd into one (or pass --repo).")
+        return 1
+    repo = r.stdout.strip()
+
+    cfg_base = ""
+    try:
+        cfg_base = (load_config(repo, "").base_url or "")
+    except ConfigError:
+        pass  # no config yet is fine for prove; review's defaults apply
+    if not llm_configured(config_base_url=cfg_base):
+        print(NO_KEY_SCREEN)
+        return 1
+
+    plan = plan_prove(repo, args.intent)
+    if not plan.targets:
+        print(f"prove compared {plan.diffed}: no reviewable source files "
+              f"changed (tests and deletions don't count). Nothing to do.")
+        return 0
+    if not plan.intent:
+        print("prove needs one thing it couldn't derive: what is this "
+              "change meant to do? Uncommitted work has no commit message.")
+        print('  agentboard prove --intent "handle the empty-cart case"')
+        return 1
+
+    print(f"prove: {plan.diffed}")
+    print(f"  targets: {', '.join(plan.targets)}"
+          + ("" if len(plan.targets) == 1 else "  (first is primary; rest "
+             "reviewed via the same run)"))
+    print(f"  intent: from {'--intent' if plan.intent_source == 'flag' else 'commit message(s)'}")
+
+    req = ReviewRequest(
+        repo=repo, target=plan.targets[0], also=plan.targets[1:],
+        head="" if plan.worktree else plan.head,
+        base=plan.base if plan.worktree else plan.base,
+        worktree=plan.worktree, intent=plan.intent,
+        fresh=args.fresh, timeout=args.timeout,
+    )
+    result = run_review(req)
+    if result.run is None:
+        # run_review already printed the specific cause, cause-first.
+        print("STOPPED: could not run (see above).")
+        return 1
+    print()
+    print(verdict_block(result.run))
+    for line in gap_details(result.run):
+        print(line)
+    if result.board_path:
+        print(f"  board: {result.board_path}")
+    return exit_code_for(result.run)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="agentboard",
@@ -299,6 +369,15 @@ def main(argv: list[str] | None = None) -> int:
                         "executed verdict) to a growing corpus. Bare flag uses "
                         f"{_DATASET_DEFAULT}; pass a path to override.")
 
+    p = sub.add_parser("prove", help="try to break your change: BROKEN, "
+                       "HELD, or STOPPED, evidence attached")
+    p.add_argument("--repo", default=".", help="path inside the repo (default: cwd)")
+    p.add_argument("--intent", default="", help="what the change is meant to do "
+                   "(default: derived from commit messages; required for "
+                   "uncommitted work)")
+    p.add_argument("--fresh", action="store_true", help="resample proposals (ignore cache)")
+    p.add_argument("--timeout", type=int, default=1800, help="per-gate timeout seconds")
+
     args = parser.parse_args(argv)
     if args.command == "demo":
         return demo(fixed=args.fixed)
@@ -306,6 +385,8 @@ def main(argv: list[str] | None = None) -> int:
         return init(args)
     if args.command == "review":
         return review(args)
+    if args.command == "prove":
+        return prove(args)
     parser.print_help()
     return 0
 

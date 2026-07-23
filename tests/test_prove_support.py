@@ -95,3 +95,20 @@ def test_deleted_and_nonsource_files_are_excluded(repo):
     _git(r, "add", "-A")
     _git(r, "commit", "-q", "-m", "feat")
     assert targets_from_diff(r, "main", "feat") == ["keep.js"]
+
+
+def test_renamed_files_appear_as_their_current_path(repo):
+    r = str(repo)
+    _git(r, "checkout", "-q", "-b", "feat")
+    _git(r, "mv", "a.ts", "moved.ts")
+    (repo / "moved.ts").write_text("export const a = 2\n")
+    _git(r, "add", "-A")
+    _git(r, "commit", "-q", "-m", "rename")
+    targets = targets_from_diff(r, "main", "feat")
+    assert "moved.ts" in targets
+    assert "a.ts" not in targets
+
+
+def test_empty_diff_returns_empty_list_not_an_error(repo):
+    assert targets_from_diff(str(repo), "main", "main") == []
+    assert targets_from_diff(str(repo), "HEAD", worktree=True) == []
