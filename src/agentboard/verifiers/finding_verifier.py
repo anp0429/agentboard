@@ -229,6 +229,12 @@ class FindingVerifier:
         # that actually launches the runner cannot.
         if not self._prep_error and getattr(self.profile, "smoke_cmd", None):
             t0 = time.monotonic()
+            probe = getattr(self.profile, "smoke_probe", None)
+            probe_path = ""
+            if probe:
+                probe_path = os.path.join(self._workdir(repo), probe[0])
+                with open(probe_path, "w", encoding="utf-8") as pf:
+                    pf.write(probe[1])
             try:
                 smoke = self._run(self.profile.smoke_cmd, self._workdir(repo))
                 phases.append(f"smoke {time.monotonic() - t0:.1f}s")
@@ -241,6 +247,9 @@ class FindingVerifier:
                 self._prep_error = (
                     f"environment smoke probe did not finish within {self.timeout}s"
                 )
+            finally:
+                if probe_path and os.path.exists(probe_path):
+                    os.remove(probe_path)
         self.log("  warm base: " + ", ".join(phases))
         self._warm_repo = repo
 

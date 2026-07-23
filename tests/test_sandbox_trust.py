@@ -126,10 +126,14 @@ def test_no_smoke_cmd_means_no_probe(tmp_path):
 
 def test_presets_declare_a_probe():
     """The common-case presets should ship with the probe on by default:
-    collect the suite, match nothing, pass on empty."""
+    write a real probe test, run it, exit 0 — the filter trick
+    ("match nothing, pass on empty") died in gauntlet catch 5: vitest 4
+    exits 1 when a -t filter skips everything."""
     p = RepoProfile.pnpm_vitest("x", build=False)
     assert p.smoke_cmd is not None
-    assert "--passWithNoTests" in p.smoke_cmd
+    assert p.smoke_probe is not None
+    assert p.smoke_cmd[-1] == p.smoke_probe[0]
+    assert "-t" not in p.smoke_cmd
 
 
 # ---------------------------------------------------------------------------

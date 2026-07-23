@@ -66,3 +66,16 @@ def test_spec_suffix_colocated_and_dir(tmp_path):
     _mk(tmp_path, "test/b.spec.ts", "import { b } from '../src/b'\n")
     assert V.default_tests_for(str(tmp_path), "src/b.ts") \
         == os.path.join("test", "b.spec.ts")
+
+
+def test_smoke_uses_a_real_probe_file_not_filter_tricks():
+    # gauntlet catch 5: vitest 4 exits 1 when a -t filter skips everything,
+    # --passWithNoTests notwithstanding; the probe is now a real test file
+    from agentboard.verifiers.vitest_verifier import (_PROBE_REL,
+                                                      RepoProfile)
+    for prof in (RepoProfile.pnpm_vitest("x"), RepoProfile.npm_vitest("x")):
+        assert prof.smoke_cmd[-1] == _PROBE_REL
+        assert "-t" not in prof.smoke_cmd
+        assert prof.smoke_probe is not None
+        assert prof.smoke_probe[0] == _PROBE_REL
+        assert "___agentboard_env_probe___" in prof.smoke_probe[1]

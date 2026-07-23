@@ -79,6 +79,15 @@ def unfrozen_install(install_cmd: list[str]) -> list[str] | None:
 
 # --- the explicit, per-repo facts the verifier cannot guess -----------------
 
+_PROBE_REL = "__agentboard_env_probe__.test.ts"
+_PROBE_CONTENT = (
+    'import {{ expect, test }} from "vitest";\n'
+    'test("___agentboard_env_probe___", () => {{\n'
+    '  expect(1).toBe(1);\n'
+    '}});\n'
+).format()
+
+
 @dataclass
 class RepoProfile:
     """Everything repo-specific, named instead of assumed.
@@ -97,6 +106,15 @@ class RepoProfile:
     # setup sequences, required helpers, gotchas). Injected into the reviewer
     # prompt as data — the prompt itself stays repo-agnostic.
     harness_notes: str = ""
+    # A REAL probe file for the smoke check: (relative path, content).
+    # The old probe filtered for a test that doesn't exist and trusted
+    # --passWithNoTests; vitest 4 exits 1 when everything is filtered to
+    # skipped (gauntlet catch 5: ohash and vueuse both died of it, with
+    # npm warnings as noise on top). Writing one trivial test and running
+    # it is the probe that cannot lie: exit 0 means the environment can
+    # execute a test, full stop. The verifier writes it before the smoke
+    # and deletes it after.
+    smoke_probe: tuple[str, str] | None = None
     # Cheap functional probe run once after install/build: proves the test
     # runner actually starts in the warm sandbox (binary present, config
     # loads, transforms work) BEFORE any finding is judged. Exit codes can be
@@ -159,7 +177,8 @@ class RepoProfile:
             build_cmd=pnpm + ["-r", "build"] if build else None,
             test_base=test,
             env={"CI": "true", **(env or {})},
-            smoke_cmd=test + ["--passWithNoTests", "-t", "___agentboard_env_probe___"],
+            smoke_cmd=test + [_PROBE_REL],
+            smoke_probe=(_PROBE_REL, _PROBE_CONTENT),
         )
 
     @classmethod
@@ -182,7 +201,8 @@ class RepoProfile:
             build_cmd=["npm", "run", "build"] if build else None,
             test_base=test,
             env={"CI": "true", **(env or {})},
-            smoke_cmd=test + ["--passWithNoTests", "-t", "___agentboard_env_probe___"],
+            smoke_cmd=test + [_PROBE_REL],
+            smoke_probe=(_PROBE_REL, _PROBE_CONTENT),
         )
 
 

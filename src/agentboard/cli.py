@@ -33,6 +33,7 @@ from .api import (  # noqa: F401 - re-exports are part of this module's surface
 )
 from .demo import TARGET_DIR
 from .fingerprint import verdict_summary
+from .verifiers.vitest_verifier import _PROBE_CONTENT, _PROBE_REL
 from .review import ReviewFinding, ReviewRun, render_review_html
 from .verifiers.finding_verifier import FindingVerifier
 from .verifiers.vitest_verifier import RepoProfile
@@ -101,8 +102,8 @@ def _demo_profile() -> RepoProfile:
         test_base=["npx", "vitest", "run"],
         build_cmd=None,
         env={"CI": "true"},
-        smoke_cmd=["npx", "vitest", "run", "--passWithNoTests",
-                   "-t", "___agentboard_env_probe___"],
+        smoke_cmd=["npx", "vitest", "run", _PROBE_REL],
+        smoke_probe=(_PROBE_REL, _PROBE_CONTENT),
     )
 
 
