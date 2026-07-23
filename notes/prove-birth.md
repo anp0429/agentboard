@@ -146,14 +146,29 @@ quotes-"AssertionError" case as a permanent test.
 
 ## The ledger
 
-Sixteen real defects found by the tool in and around its own code in one
-day, across three self-review rounds: four in the verdict path itself,
-one in a fix made hours earlier, and five in the very function built to
-fix the reviewer's imports. Broken proposals went 33, 29, 0 across the
-rounds. Every defect is now a named test in the suite. The merge of the
-`prove` feature was blocked, by rule, until the tool's own verdict on its
-own diff came back clean of real gaps — prove gated its own birth, and
-then kept gating its own growth.
+Twenty-five real defects found by the tool in and around its own code
+across five self-review rounds in two days, plus one latent twin the
+tool taught us to grep for. Broken proposals went 33, 29, 0, 0, 0 as
+the rounds taught the proposer its own repo. Every defect is a named
+test in the suite.
+
+Severity, for the skeptic, because "25 bugs" flattens a distribution
+that shouldn't be flattened: six were verdict-path or evidence-integrity
+defects — the two substring classifiers (a false-positive generator in
+each harness), injection silently rewriting test bodies, title
+extraction selecting the wrong test for serial execution, STOPPED
+exiting 0, and a mid-run failure discarding executed evidence. Those
+are the ones that matter, they predate the week, and they are why this
+tool exists. The rest are completeness misses in a prompt aid that was
+days old when reviewed — real, fixed, and labeled advisory by our own
+merge policy. A fair reading of this ledger is: the tool found six
+serious defects in its own honesty machinery and then relentlessly
+polished a new helper; both halves are true, and the fingerprints let
+you check which is which.
+
+The merge of the `prove` feature was blocked, by rule, until the tool's
+own verdict on its own diff came back clean of real gaps — prove gated
+its own birth, and then kept gating its own growth.
 
 None of this required trusting a model's opinion. Each finding above was
 a test that compiled, ran, and failed against the real code, and each

@@ -28,7 +28,8 @@ from dataclasses import dataclass, field, fields
 from .agents.critic_agent import CriticAgent
 from .agents.gap_auditor import GapAuditor
 from .verifiers.assertion_lint import lint_test
-from .agents.reviewer_agent import ReviewerAgent
+from .agents.test_repairer import MAX_REPAIRS, TestRepairer
+from .agents.reviewer_agent import ReviewerAgent, import_surface
 from .config import (
     ConfigError,
     build_profile,
@@ -42,7 +43,7 @@ from .config import (
 from .fingerprint import verdict_summary
 from .proposal_cache import propose_or_cached
 from .providers import endpoint_label
-from .review import ReviewRun, flag_systematic_artifacts, render_review_html
+from .review import ReviewFinding, ReviewRun, flag_systematic_artifacts, render_review_html
 from .verifiers.finding_verifier import FindingVerifier
 from .verifiers.harness import harness_for_profile, harness_for_target
 
@@ -65,6 +66,7 @@ class ReviewRequest:
     no_critic: bool = False
     audit_model: str = ""
     no_audit: bool = False
+    no_repair: bool = False
     fresh: bool = False
     timeout: int = 1800
     also: list[str] = field(default_factory=list)
@@ -304,10 +306,41 @@ def run_review(request: ReviewRequest, log=print) -> ReviewResult:
             unreviewed.append(tgt)
             continue
         sub = ReviewRun(intent=intent, target=tgt, findings=findings)
-        FindingVerifier(repo, profile, tests_file=tst_path,
-                        timeout=req.timeout,
-                        project_dir=project_dir, log=log,
-                        harness=harness_for_profile(profile)).run(sub)
+        verifier = FindingVerifier(repo, profile, tests_file=tst_path,
+                                   timeout=req.timeout,
+                                   project_dir=project_dir, log=log,
+                                   harness=harness_for_profile(profile))
+        verifier.run(sub)
+        if not req.no_repair:
+            # ONE bounded repair round: a broken proposal is the
+            # proposer's failure and a lost attempt — feed it the exact
+            # error and the target's real import surface, once. Repaired
+            # code re-enters the SAME verifier and earns its status by
+            # execution; a proposal that breaks twice stays broken.
+            broken = [f for f in sub.findings
+                      if f.status == "broken_test" and f.test_code]
+            if broken:
+                surface = import_surface(repo, tgt)
+                repairer = TestRepairer(model=cfg.reviewer_model, log=log)
+                repairer.base_url = provider_base
+                to_rerun: list[ReviewFinding] = []
+                for f in broken[:MAX_REPAIRS]:
+                    code = repairer.repair(f, surface)
+                    if code:
+                        f.test_code = code
+                        f.status = "pending"
+                        f.repaired = True
+                        to_rerun.append(f)
+                if to_rerun:
+                    log(f"  repairing {len(to_rerun)}/{len(broken)} broken "
+                        "proposal(s) (one round; statuses re-earned by "
+                        "execution)")
+                    verifier.run(ReviewRun(intent=intent, target=tgt,
+                                           findings=to_rerun))
+                    fixed = sum(1 for f in to_rerun
+                                if f.status != "broken_test")
+                    log(f"  [repair] {fixed}/{len(to_rerun)} repaired "
+                        "proposal(s) now reach a verdict")
         for f in sub.findings:
             # deterministic brittleness lint: free, always on, advisory
             if f.status == "confirmed_gap" and f.test_code:

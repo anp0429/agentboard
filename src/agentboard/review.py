@@ -42,6 +42,9 @@ class ReviewFinding:
     # (short-needle substrings, format opinions). Advisory — NEVER changes
     # status.
     lint_note: str = ""
+    # set when a broken proposal was repaired (one bounded round) and
+    # re-executed; its status is whatever the SECOND run earned
+    repaired: bool = False
     # fix stage (TransitionVerifier is the judge — red->green->no-regression)
     fix_status: str = ""               # "" | "fix_verified" | "fix_rejected" | "fix_not_attempted"
     fix_note: str = ""                 # verifier's reason (or agent's failure to propose)
