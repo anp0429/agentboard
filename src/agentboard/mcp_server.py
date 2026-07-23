@@ -155,6 +155,73 @@ def review(
     return _run_review(req)
 
 
+def _prove(repo: str, intent: str = "", fresh: bool = False,
+           timeout: int = 1800) -> dict:
+    """Tool body for prove, kept decorator-free so tests exercise it the
+    same way review's helpers are exercised (the decorated object's call
+    surface belongs to the MCP framework, not to us)."""
+    from .prove import plan_prove, prove_board_path, verdict_from_counts
+
+    plan = plan_prove(repo, intent)
+    if not plan.targets:
+        return {"verdict": f"NOTHING TO PROVE: compared {plan.diffed}; no "
+                           "reviewable source files changed (tests and "
+                           "deletions do not count)",
+                "targets": []}
+    if not plan.intent:
+        return {"error": "intent required: this is uncommitted work, which "
+                         "has no commit message to derive intent from — "
+                         "pass intent='what the change is meant to do'"}
+    req = _review_request(
+        repo=repo, target=plan.targets[0], intent=plan.intent,
+        worktree=plan.worktree, base=plan.base,
+        head="" if plan.worktree else plan.head,
+        fresh=fresh, timeout=timeout,
+    )
+    req.also = plan.targets[1:]
+    req.board = prove_board_path()
+    doc = _run_review(req)
+    if "error" not in doc:
+        doc["verdict"] = verdict_from_counts(
+            doc.get("verdict_counts") or {}, doc.get("env_error") or "")
+    return doc
+
+
+@mcp.tool()
+def prove(
+    repo: str,
+    intent: str = "",
+    fresh: bool = False,
+    timeout: int = 1800,
+) -> dict:
+    """Try to BREAK the current change in `repo` — the author-side verb.
+
+    Zero configuration: a dirty tracked tree is reviewed as the working
+    tree against HEAD (the state on disk is the thing under test); a clean
+    tree is reviewed as the current branch against its fork point. Targets
+    are the changed source files (tests and deletions excluded); intent
+    derives from the branch's commit messages when not given. Uncommitted
+    work has no commit message, so pass `intent` in that case.
+
+    The result carries a one-line `verdict` first: BROKEN (N proposed
+    tests executed and failed against the code — each finding has the
+    runnable test source and observed output), HELD (M executed attempts,
+    none broke it; explicitly NOT a proof of correctness), or STOPPED /
+    NOTHING NEW EXECUTED (what happened instead, stated plainly). A
+    `broken_test` finding is the proposer's failure, never evidence about
+    the code. Ideal loop for an agent: write code, call prove, fix any
+    BROKEN finding using its failing test, call prove again.
+
+    Args:
+        repo: absolute path to the git repo.
+        intent: what the change is meant to do (required only for
+            uncommitted work, which has no commit message to derive from).
+        fresh: resample proposals instead of using the cache.
+        timeout: per-gate timeout in seconds.
+    """
+    return _prove(repo=repo, intent=intent, fresh=fresh, timeout=timeout)
+
+
 def main() -> None:
     mcp.run()
 

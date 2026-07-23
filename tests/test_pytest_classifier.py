@@ -99,3 +99,20 @@ def test_assertion_whose_message_leads_with_timeout_wording_stays_assertion():
 def test_runner_generated_timeout_with_no_traceback_still_routes_to_timeout():
     assert H.classify_failure("Error: Test timed out in 5000ms")[0] == "timeout"
     assert H.classify_failure("Failed: Timeout >5.0s")[0] == "timeout"
+
+
+def test_setup_error_headline_is_the_exception_not_the_coordinate():
+    fm = (
+        "failed on setup with \"file /tmp/x/tests/test_host.py, line 214\"\n"
+        "    def test_proposal():\n"
+        ">       from agentboard.cli import _targets_from_diff\n"
+        "E   ImportError: cannot import name '_targets_from_diff' from 'agentboard.cli'\n"
+    )
+    line = H.failure_headline(fm)
+    assert line.startswith("ImportError:")
+    assert "line 214" not in line
+
+
+def test_headline_falls_back_to_first_line_when_no_exception_named():
+    fm = "collection failure\nsomething odd happened\n"
+    assert H.failure_headline(fm) == "collection failure"

@@ -120,3 +120,129 @@ def test_untracked_source_files_are_named_not_silently_ignored(repo):
     (repo / "test_new.py").write_text("def test_n(): pass\n")
     (repo / "notes.md").write_text("hi\n")
     assert untracked_source_files(str(repo)) == ["brand_new.py"]
+
+
+def test_import_surface_names_the_module_and_public_names(tmp_path):
+    from agentboard.agents.reviewer_agent import import_surface
+    pkg = tmp_path / "src" / "pkg"
+    pkg.mkdir(parents=True)
+    (tmp_path / "src" / "__init__.py").write_text("")
+    (pkg / "__init__.py").write_text("")
+    (pkg / "mod.py").write_text(
+        "CONST = 1\n_hidden = 2\n\n"
+        "def public_fn():\n    pass\n\n"
+        "def _private_fn():\n    pass\n\n"
+        "class Thing:\n    pass\n"
+    )
+    out = import_surface(str(tmp_path), "src/pkg/mod.py")
+    # src is a source ROOT, not a package: `pkg.mod` is what pip installs
+    # and what a test can import. The first version of this test blessed
+    # `src.pkg.mod` and the gate's round-three review corrected us.
+    assert "`pkg.mod`" in out
+    assert "public_fn" in out and "Thing" in out and "CONST" in out
+    assert "_private_fn" not in out and "_hidden" not in out
+
+
+def test_import_surface_for_package_init_is_the_package(tmp_path):
+    from agentboard.agents.reviewer_agent import import_surface
+    pkg = tmp_path / "acme"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("def hello():\n    pass\n")
+    out = import_surface(str(tmp_path), "acme/__init__.py")
+    assert "`acme`" in out
+    assert "hello" in out
+
+
+def test_import_surface_is_empty_for_non_python_and_unparsable(tmp_path):
+    from agentboard.agents.reviewer_agent import import_surface
+    (tmp_path / "a.ts").write_text("export const a = 1\n")
+    (tmp_path / "bad.py").write_text("def broken(:\n")
+    assert import_surface(str(tmp_path), "a.ts") == ""
+    assert import_surface(str(tmp_path), "bad.py") == ""
+
+
+def test_import_surface_round_three_regressions(tmp_path):
+    """The five gaps the gate found in import_surface itself (run
+    e4a011add5ff924c), one file: annotated constants, tuple/compound
+    assignments, lowercase public bindings, and privates still excluded."""
+    from agentboard.agents.reviewer_agent import import_surface
+    (tmp_path / "mod.py").write_text(
+        "ENABLED: bool = True\n"
+        "bare_annotation: int\n"
+        "FIRST, SECOND = 1, 2\n"
+        "a = b = 3\n"
+        "router = object()\n"
+        "_private = 4\n"
+    )
+    out = import_surface(str(tmp_path), "mod.py")
+    for name in ("ENABLED", "FIRST", "SECOND", "a", "b", "router"):
+        assert name in out
+    assert "_private" not in out
+    assert "bare_annotation" not in out  # annotation without value: no binding
+
+
+def test_import_surface_init_reexports_are_the_public_surface(tmp_path):
+    from agentboard.agents.reviewer_agent import import_surface
+    pkg = tmp_path / "src" / "pkg"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text(
+        "from .mod import Thing as Thing, helper\n"
+        "from ._impl import _secret\n"
+    )
+    out = import_surface(str(tmp_path), "src/pkg/__init__.py")
+    assert "`pkg`" in out
+    assert "Thing" in out and "helper" in out
+    assert "_secret" not in out
+
+
+def test_import_surface_namespace_packages_keep_the_full_path(tmp_path):
+    from agentboard.agents.reviewer_agent import import_surface
+    d = tmp_path / "company" / "product"
+    d.mkdir(parents=True)  # PEP 420: no __init__.py anywhere
+    (d / "feature.py").write_text("def go():\n    pass\n")
+    out = import_surface(str(tmp_path), "company/product/feature.py")
+    assert "`company.product.feature`" in out
+
+
+def test_import_surface_regular_module_imports_are_not_api(tmp_path):
+    from agentboard.agents.reviewer_agent import import_surface
+    (tmp_path / "mod.py").write_text("import json\n\ndef fn():\n    pass\n")
+    out = import_surface(str(tmp_path), "mod.py")
+    assert "fn" in out
+    assert "json" not in out
+
+
+def test_import_surface_round_four_regressions(tmp_path):
+    """Run 6e0f5bfb428f68c7: module-level for/with targets persist as
+    globals and are listed; a del removes its name; a top-level walrus
+    binds; names inside nested scopes still never leak."""
+    from agentboard.agents.reviewer_agent import import_surface
+    (tmp_path / "mod.py").write_text(
+        "for item in [1]:\n    pass\n"
+        "with open(__file__) as handle:\n    pass\n"
+        "TEMP = 1\n"
+        "del TEMP\n"
+        "total = (walrus_public := 5) + 1\n"
+        "def fn():\n    inner = (nested_walrus := 2)\n    return inner\n"
+    )
+    out = import_surface(str(tmp_path), "mod.py")
+    for name in ("item", "handle", "walrus_public", "total", "fn"):
+        assert name in out
+    assert "TEMP" not in out
+    assert "nested_walrus" not in out
+    assert "inner" not in out
+
+
+def test_import_surface_refuses_untrustworthy_truncated_paths(tmp_path):
+    """A non-identifier path segment below any source root makes the
+    module path a guess; the honest surface is none at all."""
+    from agentboard.agents.reviewer_agent import import_surface
+    bad = tmp_path / "my-lib" / "pkg"
+    bad.mkdir(parents=True)
+    (bad / "mod.py").write_text("def fn():\n    pass\n")
+    assert import_surface(str(tmp_path), "my-lib/pkg/mod.py") == ""
+    ok = tmp_path / "packages" / "my-app" / "src" / "pkg"
+    ok.mkdir(parents=True)
+    (ok / "mod.py").write_text("def fn():\n    pass\n")
+    out = import_surface(str(tmp_path), "packages/my-app/src/pkg/mod.py")
+    assert "`pkg.mod`" in out  # cut at a src root: self-contained, trusted

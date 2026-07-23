@@ -233,7 +233,9 @@ def test_verdict_collection_error_is_broken_test(tmp_path):
     )
     status, observed = H.read_verdict(out)
     assert status == "broken_test"
-    assert "collection failure" in observed
+    # cause-first (increment 5b): the raised exception is the headline,
+    # not junit's coordinate wording — a coordinate explains nothing
+    assert "SyntaxError" in observed
 
 
 def test_verdict_empty_run_is_name_match_failure(tmp_path):

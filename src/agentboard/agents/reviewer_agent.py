@@ -22,6 +22,7 @@ from __future__ import annotations
 
 from ..providers import chat_completion
 
+import ast
 import json
 import os
 
@@ -97,6 +98,139 @@ Output ONLY JSON:
     "test_code": "<a complete test in the existing harness style, or null if covered>"
   }}
 ]}}"""
+
+
+def import_surface(repo_root: str, target_rel: str) -> str:
+    """Deterministic prompt DATA for Python targets: the module path a test
+    must import and the public names that actually exist. Exists because
+    the reviewer, given only source text, invented `_targets_from_diff`
+    in agentboard.cli when the real names were public in agentboard.config
+    — 33 proposals died of hallucinated imports in one self-review run.
+    Facts from the ast, not judgment; the prompt stays repo-agnostic."""
+    if not target_rel.endswith(".py"):
+        return ""
+    try:
+        with open(os.path.join(repo_root, target_rel),
+                  encoding="utf-8", errors="replace") as fh:
+            tree = ast.parse(fh.read())
+    except (OSError, SyntaxError, ValueError):
+        return ""
+    # Name collection: every public top-level BINDING is importable, and
+    # the gate proved the narrow first version wrong five ways in one run
+    # (fingerprint e4a011add5ff924c): annotated constants, compound and
+    # tuple assignments, lowercase publics like `router`, __init__
+    # re-exports, namespace-package paths.
+    is_init = os.path.basename(target_rel) == "__init__.py"
+    names: list[str] = []
+
+    def _bind(name: str) -> None:
+        if name and not name.startswith("_") and name not in names:
+            names.append(name)
+
+    def _target_names(t) -> list[str]:
+        if isinstance(t, ast.Name):
+            return [t.id]
+        if isinstance(t, (ast.Tuple, ast.List)):
+            out: list[str] = []
+            for e in t.elts:
+                out.extend(_target_names(e))
+            return out
+        if isinstance(t, ast.Starred):
+            return _target_names(t.value)
+        return []
+
+    def _walruses(node) -> list[str]:
+        # a top-level `(name := ...)` binds a module global; one inside a
+        # nested function/class/lambda does not — recurse but never enter
+        # a new scope
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef,
+                             ast.ClassDef, ast.Lambda)):
+            return []
+        out: list[str] = []
+        if isinstance(node, ast.NamedExpr) and isinstance(node.target,
+                                                          ast.Name):
+            out.append(node.target.id)
+        for child in ast.iter_child_nodes(node):
+            out.extend(_walruses(child))
+        return out
+
+    deleted: set[str] = set()
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef,
+                             ast.ClassDef)):
+            _bind(node.name)
+            continue  # never descend into a new scope
+        if isinstance(node, ast.Assign):
+            for t in node.targets:
+                for nm in _target_names(t):
+                    _bind(nm)
+        elif isinstance(node, ast.AnnAssign):
+            # ENABLED: bool = True binds; a bare `x: int` annotation
+            # does not exist at runtime and is excluded
+            if node.value is not None and isinstance(node.target, ast.Name):
+                _bind(node.target.id)
+        elif isinstance(node, (ast.For, ast.AsyncFor)):
+            # a module-level loop variable persists as a module global
+            # after the loop (round four: the gate proved the omission)
+            for nm in _target_names(node.target):
+                _bind(nm)
+        elif isinstance(node, (ast.With, ast.AsyncWith)):
+            for item in node.items:
+                if item.optional_vars is not None:
+                    for nm in _target_names(item.optional_vars):
+                        _bind(nm)
+        elif isinstance(node, ast.Delete):
+            # `del NAME` at top level removes the binding: reporting a
+            # deleted name would hand the reviewer an ImportError
+            for t in node.targets:
+                if isinstance(t, ast.Name):
+                    deleted.add(t.id)
+        elif is_init and isinstance(node, (ast.Import, ast.ImportFrom)):
+            # a package __init__'s re-exports ARE its public surface;
+            # regular modules' imports are dependencies, not API, and
+            # stay out
+            for a in node.names:
+                if a.name == "*":
+                    continue
+                _bind(a.asname or a.name.split(".")[0])
+        for w in _walruses(node):
+            _bind(w)
+    names[:] = [n for n in names if n not in deleted]
+
+    # Module path, best effort for real layouts: walk up through
+    # identifier-named directories (namespace packages have no
+    # __init__.py, PEP 420), then drop a topmost src/lib segment, which
+    # is a source ROOT, not a package. Requiring __init__.py at every
+    # level truncated `company.product.feature` to `product.feature`.
+    stem = os.path.basename(target_rel)[: -len(".py")]
+    parts = [] if stem == "__init__" else [stem]
+    d = os.path.dirname(target_rel)
+    truncated = False
+    while d:
+        seg = os.path.basename(d)
+        if not seg.isidentifier():
+            truncated = True
+            break
+        parts.append(seg)
+        d = os.path.dirname(d)
+    if truncated and not (parts and parts[-1] in ("src", "lib")):
+        # the walk was cut by a non-importable path segment somewhere
+        # BELOW a source root: any module path we emit would be a guess,
+        # and a wrong path in the prompt is worse than none (round four)
+        return ""
+    while parts and parts[-1] in ("src", "lib"):
+        parts.pop()
+    if not parts:
+        return ""
+    module = ".".join(reversed(parts))
+    listed = ", ".join(names) if names else "(no public top-level names)"
+    return (
+        f"IMPORT SURFACE ({target_rel}) — importable as `{module}`. "
+        f"Public top-level names: {listed}. In every proposed test, import "
+        f"the target ONLY via this module path and ONLY these names; never "
+        f"invent private helpers, other module paths, or fixtures that are "
+        f"not defined inside your own test."
+    )
 
 
 def _loads_lenient(text: str) -> dict:
@@ -213,6 +347,7 @@ class ReviewerAgent:
     def review(self, intent: str, change: str = "") -> list[ReviewFinding]:
         source = self._read(self.target_path)[: self.max_chars]
         tests = self._read(self.existing_tests_path)[: self.max_chars]
+        surface = import_surface(self.repo_root, self.target_path)
         change_block = (
             f"WHAT THIS PR CHANGED (review THIS against the intent, not the whole file):\n"
             f"```\n{change}\n```\n\n"
@@ -223,6 +358,7 @@ class ReviewerAgent:
             f"{change_block}"
             f"SOURCE FILE ({self.target_path}):\n```\n{source}\n```\n\n"
             f"EXISTING TESTS ({self.existing_tests_path}):\n```\n{tests}\n```"
+            + (f"\n\n{surface}" if surface else "")
             + (f"\n\n{self._axis_directive}" if self._axis_directive else "")
         )
         notes = (

@@ -51,9 +51,10 @@ does not change. The MCP server exposes `prove` as the primary tool name,
 
 ## Kill list (acceptance criteria, ranked by lethality)
 
-1. **False BROKEN on first contact.** Wire the assertion lint
-   (`verifiers/assertion_lint.py`, built + tested, currently unwired) into
-   the prove path. Exact assertions on collections/counts; loose on
+1. **False BROKEN on first contact.** BUILD the assertion lint (an
+   earlier note claimed `verifiers/assertion_lint.py` existed built and
+   tested; it does not — corrected Jul 22, the receipts rule applies to
+   our own docs), then wire it into the prove path. Exact assertions on collections/counts; loose on
    rendered values. Zero false BROKENs across the gauntlet or no launch.
 2. **The silent nothing.** Covered by the STOPPED line + zero-proposal
    hard stop. Every gauntlet run must end in BROKEN, HELD, or a

@@ -96,3 +96,37 @@ def test_unknown_field_fails_loudly():
 def test_worktree_is_the_default():
     """The agent-session mode is the default mode; refs mode is the opt-out."""
     assert mcp_server._review_request().worktree is True
+
+
+def test_prove_tool_is_registered_beside_review():
+    """The author-side verb exists as a first-class MCP tool; review stays.
+    Registration only — the body lives in _prove, exercised directly below
+    the way review's helpers are, because the decorated object's call
+    surface belongs to the framework."""
+    import agentboard.mcp_server as srv
+    assert getattr(srv, "prove", None) is not None
+    assert getattr(srv, "review", None) is not None
+    assert callable(srv._prove)
+
+
+def test_prove_tool_asks_for_intent_on_uncommitted_work(monkeypatch, tmp_path):
+    """Worktree mode with no derivable intent returns a crisp error dict,
+    never a review run with an empty intent."""
+    import subprocess
+
+    import agentboard.mcp_server as srv
+    r = str(tmp_path)
+    for cmd in (["init", "-q", "-b", "main"],
+                ["config", "user.email", "t@t"],
+                ["config", "user.name", "t"]):
+        subprocess.run(["git", "-C", r, *cmd], check=True,
+                       capture_output=True)
+    (tmp_path / "a.py").write_text("A = 1\n")
+    subprocess.run(["git", "-C", r, "add", "-A"], check=True,
+                   capture_output=True)
+    subprocess.run(["git", "-C", r, "commit", "-q", "-m", "init"],
+                   check=True, capture_output=True)
+    (tmp_path / "a.py").write_text("A = 2\n")  # dirty, no intent anywhere
+    out = srv._prove(repo=r)
+    assert "error" in out
+    assert "intent" in out["error"]

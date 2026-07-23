@@ -159,3 +159,20 @@ def test_prove_board_path_is_per_verb_and_non_overwriting():
     assert "agentboard_prove_board_" in a
     assert a.endswith(".html")
     assert a != b
+
+
+def test_verdict_from_counts_matches_the_run_path():
+    from agentboard.prove import verdict_from_counts
+    run = _run(confirmed_gap=2, handled=7, broken_test=3)
+    counts = {"confirmed_gap": 2, "handled": 7, "broken_test": 3}
+    assert verdict_from_counts(counts) == verdict_block(run)
+    held_run = _run(handled=5, skipped_covered=2)
+    assert verdict_from_counts({"handled": 5, "skipped_covered": 2}) == \
+        verdict_block(held_run)
+
+
+def test_verdict_from_counts_tolerates_missing_and_unknown_keys():
+    from agentboard.prove import verdict_from_counts
+    assert verdict_from_counts({}).startswith("STOPPED: nothing was proposed")
+    line = verdict_from_counts({"handled": 1, "mystery_status": 9})
+    assert line.startswith("HELD: 1 executed attempts")
