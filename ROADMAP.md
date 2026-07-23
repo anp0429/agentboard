@@ -91,7 +91,8 @@ break the core thesis.
   bad candidate fix must render as rejected, never as a diff to apply.
 - [ ] **Assertion quality.** The benchmark's core finding: same bug class, one proposal
   asserts the right remedy (catch) and one the wrong remedy (miss + false positive).
-  Wire the assertion lint (`verifiers/assertion_lint.py`, built and tested, not yet in
+  Build the assertion lint (an earlier roadmap claimed one existed, built and tested; a
+  `find` says otherwise — corrected here, receipts rule applies to us too), then wire it in
   the loop) and feed assertion-shape guidance back to the proposer.
 - [ ] **Auditor calibration, round two.** The false-positive-must-cite-source rule
   helped, but the auditor still inverted on two strict catches by citing the *buggy*
