@@ -254,33 +254,54 @@ class VitestHarness(Harness):
             "--reporter=json", f"--outputFile={out}",
         ]
 
+    _EXC_HEAD = re.compile(
+        r"^([A-Za-z_$][\w$.]*(?:Error|Exception))"
+        r"(?:\s*\[[^\]]+\])?"
+        r"(?::|$)")
+
     def classify_failure(self, fm: str) -> tuple[str, str]:
-        """One failed assertionResult -> (kind, first_line). The single
+        """One failure message -> (kind, first_line). This is the gate's
         shared brain for serial and batched paths — they must never diverge.
 
-        Only a named AssertionError counts as an assertion failure. The old
-        heuristic also accepted any message containing "expected" — and
-        "Unexpected token", a parse error, contains that substring, so a
-        garbage test could mint a confirmed_gap. A runtime crash that is
-        really the tool's fault still surfaces (as broken_test, where a human
-        reads it); the gate stays conservative because an inflated gap is the
-        one error class this design must never produce. vitest's assertion
+        Classification is by the exception actually RAISED, read from its
+        raising position: in a JS report the thrown error heads the message
+        and stack frames descend, so the first line matching a named error
+        (SomeError:, AssertionError [ERR_ASSERTION]:) is the verdict. A
+        substring match over the whole report was the pytest classifier's
+        false-positive generator, and the same latent twin sat here — a
+        crash merely QUOTING "AssertionError" (a codeframe line, a
+        .toThrow(AssertionError) expectation) could mint a confirmed gap.
+        Ordering, twice proven by the gate on itself: an identified
+        AssertionError wins outright, because its human message may
+        legitimately mention timeouts; timeout wording is consulted on the
+        raising line, or over the report only when NO error was named
+        (runner-generated reports have no traceback). vitest's assertion
         layer (@vitest/expect, chai, node:assert) names AssertionError in
         every genuine expect/assert failure."""
         first = fm.strip().splitlines()[0][:200] if fm.strip() else ""
-        if "timed out" in fm.lower():
-            return "timeout", first
         # vitest 3 serializes its per-test timeout through a stack-donor
-        # placeholder: the reported failureMessage is the placeholder's stack,
-        # headed "Error: STACK_TRACE_ERROR", and the human timeout message
-        # does not survive into the JSON reporter. The placeholder header IS
-        # the timeout signal. A user test could only fake it by throwing that
-        # exact message, and the misfile would land in timed_out (ambiguity,
-        # a human's job) — the conservative direction, never a minted gap.
+        # placeholder: the reported failureMessage is the placeholder's
+        # stack, headed "Error: STACK_TRACE_ERROR", and the human timeout
+        # message does not survive into the JSON reporter. The placeholder
+        # header IS the timeout signal; it must HEAD the message.
         if first == "Error: STACK_TRACE_ERROR":
             return "timeout", "test timed out (vitest 3 placeholder serialization)"
-        if "AssertionError" in fm:
+        exc = ""
+        exc_line = ""
+        for line in fm.splitlines():
+            st = line.strip()
+            m = self._EXC_HEAD.match(st)
+            if m:
+                exc, exc_line = m.group(1), st
+                break
+        if exc.endswith("AssertionError"):
             return "assertion", first
+        if exc.endswith("TimeoutError"):
+            return "timeout", first
+        if exc and "timed out" in exc_line.lower():
+            return "timeout", first
+        if not exc and "timed out" in fm.lower():
+            return "timeout", first
         return "load_error", first
 
     def read_verdict(self, out: str) -> tuple[Status, str]:

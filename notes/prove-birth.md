@@ -116,6 +116,34 @@ approvingly, that exception-handler aliases are correctly absent because
 Python itself deletes them after the handler. The reviewer is reading
 the language spec at this point. Running total: twenty.
 
+## Round five, and the twin (run fingerprint c6b038372514ff65)
+
+The fifth board: zero broken proposals for the third consecutive run,
+and six gaps. Five were real, all low-severity completeness misses in
+`import_surface`'s model of module-scope binding: a non-identifier
+filename stem produced a confident wrong path; a deleted-then-rebound
+name stayed deleted; a tuple `del (A, B)` slipped past a Name-only
+check; a walrus inside a function's default expression (evaluated at
+module level) went unseen; and bindings created inside module-level
+try/if bodies were invisible to a top-level-only walk. The sixth was
+the auditor's third catch: a proposal asserting the substring `' i'`
+against a prose sentence, flagged likely_false_positive — specimen
+three for the assertion lint. This round also forced a policy: gaps
+that can cause false verdicts or wrong prompt facts block merge;
+completeness misses in advisory aids are logged and fixed in course.
+All five were fixed the next morning by rewriting the collector as a
+recursive module-scope walker. Running total: twenty-five.
+
+And one find the tool gets only partial credit for: its pytest
+classifier bug taught us what to grep for, and the grep found the same
+substring pattern in the vitest classifier — the harness that ran the
+benchmark and every upstream finding. Every published claim survives
+it (all were hand-reproduced, with repros in the issues, and the bug
+direction can only inflate gaps, never certify bad code), but it was
+a live false-positive generator and is now fixed the same way:
+classification by the error in raising position, with the crash-that-
+quotes-"AssertionError" case as a permanent test.
+
 ## The ledger
 
 Sixteen real defects found by the tool in and around its own code in one

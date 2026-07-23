@@ -154,48 +154,99 @@ def import_surface(repo_root: str, target_rel: str) -> str:
             out.extend(_walruses(child))
         return out
 
-    deleted: set[str] = set()
-    for node in tree.body:
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef,
-                             ast.ClassDef)):
-            _bind(node.name)
-            continue  # never descend into a new scope
-        if isinstance(node, ast.Assign):
-            for t in node.targets:
-                for nm in _target_names(t):
-                    _bind(nm)
-        elif isinstance(node, ast.AnnAssign):
-            # ENABLED: bool = True binds; a bare `x: int` annotation
-            # does not exist at runtime and is excluded
-            if node.value is not None and isinstance(node.target, ast.Name):
-                _bind(node.target.id)
-        elif isinstance(node, (ast.For, ast.AsyncFor)):
-            # a module-level loop variable persists as a module global
-            # after the loop (round four: the gate proved the omission)
-            for nm in _target_names(node.target):
-                _bind(nm)
-        elif isinstance(node, (ast.With, ast.AsyncWith)):
-            for item in node.items:
-                if item.optional_vars is not None:
-                    for nm in _target_names(item.optional_vars):
-                        _bind(nm)
-        elif isinstance(node, ast.Delete):
-            # `del NAME` at top level removes the binding: reporting a
-            # deleted name would hand the reviewer an ImportError
-            for t in node.targets:
-                if isinstance(t, ast.Name):
-                    deleted.add(t.id)
-        elif is_init and isinstance(node, (ast.Import, ast.ImportFrom)):
-            # a package __init__'s re-exports ARE its public surface;
-            # regular modules' imports are dependencies, not API, and
-            # stay out
-            for a in node.names:
-                if a.name == "*":
-                    continue
-                _bind(a.asname or a.name.split(".")[0])
-        for w in _walruses(node):
+    def _walrus_scan(expr) -> None:
+        for w in _walruses(expr):
             _bind(w)
-    names[:] = [n for n in names if n not in deleted]
+
+    _TRY_NODES = (ast.Try,) + ((ast.TryStar,) if hasattr(ast, "TryStar") else ())
+
+    def _collect(stmts) -> None:
+        # Recursive MODULE-SCOPE walker (round six): statements inside
+        # module-level if/try/for/while/with bodies bind real globals, so
+        # the walk descends compound statements — but never def/class/
+        # lambda, which open new scopes. The previous top-level-only walk
+        # missed a binding created inside an except body (run
+        # c6b038372514ff65).
+        for node in stmts:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef,
+                                 ast.ClassDef)):
+                _bind(node.name)
+                # decorator, default, annotation, and base-class
+                # expressions evaluate AT MODULE LEVEL when the def does:
+                # a walrus inside any of them binds a module global
+                for dec in node.decorator_list:
+                    _walrus_scan(dec)
+                if isinstance(node, ast.ClassDef):
+                    for b in node.bases:
+                        _walrus_scan(b)
+                    for kw in node.keywords:
+                        _walrus_scan(kw.value)
+                else:
+                    a = node.args
+                    for d in [*a.defaults, *a.kw_defaults]:
+                        if d is not None:
+                            _walrus_scan(d)
+                    for arg in [*getattr(a, "posonlyargs", []), *a.args,
+                                *a.kwonlyargs]:
+                        if arg.annotation is not None:
+                            _walrus_scan(arg.annotation)
+                    if node.returns is not None:
+                        _walrus_scan(node.returns)
+                continue  # bodies open a new scope: never descend
+            _walrus_scan(node)
+            if isinstance(node, ast.Assign):
+                for t in node.targets:
+                    for nm in _target_names(t):
+                        _bind(nm)
+            elif isinstance(node, ast.AnnAssign):
+                # ENABLED: bool = True binds; a bare `x: int` annotation
+                # does not exist at runtime and is excluded
+                if node.value is not None and isinstance(node.target,
+                                                         ast.Name):
+                    _bind(node.target.id)
+            elif isinstance(node, (ast.For, ast.AsyncFor)):
+                # a module-level loop variable persists after the loop
+                for nm in _target_names(node.target):
+                    _bind(nm)
+                _collect(node.body)
+                _collect(node.orelse)
+            elif isinstance(node, ast.While):
+                _collect(node.body)
+                _collect(node.orelse)
+            elif isinstance(node, ast.If):
+                _collect(node.body)
+                _collect(node.orelse)
+            elif isinstance(node, (ast.With, ast.AsyncWith)):
+                for item in node.items:
+                    if item.optional_vars is not None:
+                        for nm in _target_names(item.optional_vars):
+                            _bind(nm)
+                _collect(node.body)
+            elif isinstance(node, _TRY_NODES):
+                _collect(node.body)
+                for h in node.handlers:
+                    # the alias (`except E as x`) is DELETED by Python
+                    # after the handler; bindings INSIDE the handler body
+                    # persist and are collected
+                    _collect(h.body)
+                _collect(node.orelse)
+                _collect(node.finalbody)
+            elif isinstance(node, ast.Delete):
+                # in ORDER, so del-then-rebind keeps the rebind; tuple
+                # forms (`del (A, B)`) remove every contained name
+                for t in node.targets:
+                    for nm in _target_names(t):
+                        if nm in names:
+                            names.remove(nm)
+            elif is_init and isinstance(node, (ast.Import, ast.ImportFrom)):
+                # a package __init__'s re-exports ARE its public surface;
+                # regular modules' imports are dependencies, not API
+                for al in node.names:
+                    if al.name == "*":
+                        continue
+                    _bind(al.asname or al.name.split(".")[0])
+
+    _collect(tree.body)
 
     # Module path, best effort for real layouts: walk up through
     # identifier-named directories (namespace packages have no
@@ -203,6 +254,11 @@ def import_surface(repo_root: str, target_rel: str) -> str:
     # is a source ROOT, not a package. Requiring __init__.py at every
     # level truncated `company.product.feature` to `product.feature`.
     stem = os.path.basename(target_rel)[: -len(".py")]
+    if stem != "__init__" and not stem.isidentifier():
+        # "my-module.py" cannot be imported by any path; a surface built
+        # on it would be a confident wrong answer (round six, stem twin
+        # of the directory-segment rule)
+        return ""
     parts = [] if stem == "__init__" else [stem]
     d = os.path.dirname(target_rel)
     truncated = False

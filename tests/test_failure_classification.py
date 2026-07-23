@@ -77,3 +77,23 @@ def test_vitest3_placeholder_must_head_the_message():
         "    at Error: STACK_TRACE_ERROR somewhere deep"
     )
     assert _kind(msg) == "assertion"
+
+
+def test_crash_quoting_assertionerror_is_not_an_assertion():
+    # the twin's kill test: a ReferenceError whose codeframe QUOTES the
+    # word AssertionError must never mint a confirmed gap
+    fm = (
+        "ReferenceError: _mk is not defined\n"
+        "    at run (proof.test.ts:4:11)\n"
+        "  12 |   expect(() => run()).toThrow(AssertionError)\n"
+    )
+    assert _kind(fm) == "load_error"
+
+
+def test_assertion_mentioning_timed_out_stays_assertion():
+    fm = "AssertionError: expected callback to run before it timed out"
+    assert _kind(fm) == "assertion"
+
+
+def test_named_timeout_error_is_timeout():
+    assert _kind("TimeoutError: operation exceeded 5000ms") == "timeout"
