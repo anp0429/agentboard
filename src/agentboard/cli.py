@@ -1,6 +1,7 @@
 """agentboard CLI.
 
-`agentboard demo` is the zero-key proof: a bundled buggy target, four
+`agentboard demo` is the zero-key proof, told as the loop prove exists
+for: an agent writes a change, prove tries to break it. A bundled target, four
 pre-proposed tests, and the deterministic gate — no API key, no config, no
 repo of yours at risk. The LLM's job (proposing) is pre-done; what you watch
 is the part that makes agentboard trustworthy: the gate deciding.
@@ -121,9 +122,12 @@ def demo(fixed: bool = False) -> int:
         with open(tool, "w", encoding="utf-8") as fh:
             fh.write(src.replace(_BUG, _FIX, 1))
 
-    print("agentboard demo — the deterministic gate, no API key required.")
-    print(f"target: a tiny order tool ({'bug FIXED' if fixed else 'one planted bug'})")
-    print("four pre-proposed tests -> one gate run -> four honest verdicts\n")
+    print("agentboard demo — no API key required.")
+    print("the story: an AI agent just wrote a change to order_tool.js"
+          + (" and\nthen FIXED the bug prove caught" if fixed else
+             ", and\nthe change contains a subtle bug, as shipped code "
+             "sometimes does"))
+    print("prove's job: try to BREAK the change before it merges.\n")
 
     t0 = time.time()
     print("[1/2] preparing sandbox (npm install, ~10s first run)...")
@@ -131,13 +135,17 @@ def demo(fixed: bool = False) -> int:
     verifier = FindingVerifier(
         target, _demo_profile(), tests_file="demo.test.js", timeout=300
     )
-    print("[2/2] running the gate (one batched vitest invocation)...\n")
+    print("[2/2] prove attacks the change (4 proposed behaviors, "
+          "every verdict decided\n      by execution — no model in the "
+          "pass/fail path)...\n")
     verifier.run(run)
 
     for f in run.findings:
         print(f"  {_BADGE.get(f.status, f.status):<14} {f.behavior}")
         if f.status != "handled" and f.observed:
             print(f"                -> {f.observed[:100]}")
+    from .prove import verdict_block
+    print(f"\n{verdict_block(run)}")
     print(f"\n{verdict_summary(run)}")
     print(f"gate time: {time.time() - t0:.1f}s")
 
@@ -148,17 +156,21 @@ def demo(fixed: bool = False) -> int:
 
     if not fixed and run.gaps:
         print(
-            "\nThe gap is real: `clampPageSize` treats the upper bound as "
-            "exclusive,\nso a request for exactly the maximum comes back one "
-            "short — the kind of\nbug an LLM judge reads right past. The gate "
-            "ran the test; the test failed.\n"
-            "\nNow watch it flip:   agentboard demo --fixed"
+            "\nThe failing test above IS the deliverable: `clampPageSize` "
+            "treats the upper\nbound as exclusive, so a request for exactly "
+            "the maximum comes back one\nshort — the kind of bug an LLM "
+            "judge reads right past. prove ran the test;\nthe test failed; "
+            "that is the whole verdict.\n"
+            "\nThe agent's next move is yours too: fix the bug, prove it —"
+            "\n    agentboard demo --fixed"
         )
     elif fixed and not run.gaps:
         print(
-            "\nSame gate, same tests, one-line fix: the gap is gone. "
-            "Red -> green,\ndecided by execution — no model in the verdict "
-            "path, ever."
+            "\nSame attempts, one-line fix: HELD. Note the wording — "
+            "executed attempts,\nnone broke it. Absence of a counterexample, "
+            "never a proof of correctness.\nThat honesty is the product.\n"
+            "\nOn your own repo (bring a key, or point OPENAI_BASE_URL at "
+            "Ollama):\n    agentboard prove"
         )
     shutil.rmtree(work, ignore_errors=True)
     return 0
