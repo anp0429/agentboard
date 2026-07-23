@@ -54,3 +54,15 @@ def test_colocated_still_wins_before_import_matching(tmp_path):
     _mk(tmp_path, "test/thing.test.ts", "import { a } from '../src/thing'\n")
     assert V.default_tests_for(str(tmp_path), "src/thing.ts") \
         == os.path.join("src", "thing.test.ts")
+
+
+def test_spec_suffix_colocated_and_dir(tmp_path):
+    # gauntlet catch 3: pathe's entire suite is *.spec.ts
+    _mk(tmp_path, "src/a.ts", "export const a = 1\n")
+    _mk(tmp_path, "src/a.spec.ts", "import { a } from './a'\n")
+    assert V.default_tests_for(str(tmp_path), "src/a.ts") \
+        == os.path.join("src", "a.spec.ts")
+    _mk(tmp_path, "src/b.ts", "export const b = 1\n")
+    _mk(tmp_path, "test/b.spec.ts", "import { b } from '../src/b'\n")
+    assert V.default_tests_for(str(tmp_path), "src/b.ts") \
+        == os.path.join("test", "b.spec.ts")

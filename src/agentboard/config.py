@@ -517,6 +517,10 @@ def targets_from_diff(
         rel = line.strip()
         if not rel or not rel.endswith(_PROVE_SOURCE_EXTS):
             continue
+        if re.search(r"\.d\.(ts|mts|cts)$", rel):
+            # type DECLARATIONS have no runtime behavior to break; a
+            # .d.cts target sent the gauntlet's defu run into a dead end
+            continue
         if _looks_like_test_file(rel):
             continue
         out.append(rel)

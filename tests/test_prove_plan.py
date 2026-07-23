@@ -176,3 +176,51 @@ def test_verdict_from_counts_tolerates_missing_and_unknown_keys():
     assert verdict_from_counts({}).startswith("STOPPED: nothing was proposed")
     line = verdict_from_counts({"handled": 1, "mystery_status": 9})
     assert line.startswith("HELD: 1 executed attempts")
+
+
+def test_declaration_files_are_never_targets(tmp_path):
+    # gauntlet catch 2: lib/defu.d.cts became a target and dead-ended the
+    # run; type declarations have no runtime behavior to break
+    import subprocess
+
+    from agentboard.config import targets_from_diff
+    r = str(tmp_path)
+    for cmd in (["init", "-q", "-b", "main"],
+                ["config", "user.email", "t@t"],
+                ["config", "user.name", "t"]):
+        subprocess.run(["git", "-C", r, *cmd], check=True,
+                       capture_output=True)
+    (tmp_path / "lib").mkdir()
+    (tmp_path / "lib" / "x.d.cts").write_text("export type X = 1\n")
+    (tmp_path / "lib" / "real.ts").write_text("export const y = 1\n")
+    subprocess.run(["git", "-C", r, "add", "-A"], check=True,
+                   capture_output=True)
+    subprocess.run(["git", "-C", r, "commit", "-q", "-m", "i"], check=True,
+                   capture_output=True)
+    (tmp_path / "lib" / "x.d.cts").write_text("export type X = 2\n")
+    (tmp_path / "lib" / "real.ts").write_text("export const y = 2\n")
+    out = targets_from_diff(r, "HEAD", worktree=True)
+    assert out == ["lib/real.ts"]
+
+
+def test_tests_from_diff_is_worktree_aware(tmp_path):
+    # gauntlet catch 4: worktree mode passes head="" and the triple-dot
+    # diffed nothing, losing a test file the change itself had named
+    import subprocess
+
+    from agentboard.api import _tests_from_diff
+    r = str(tmp_path)
+    for cmd in (["init", "-q", "-b", "main"],
+                ["config", "user.email", "t@t"],
+                ["config", "user.name", "t"]):
+        subprocess.run(["git", "-C", r, *cmd], check=True,
+                       capture_output=True)
+    (tmp_path / "a.py").write_text("X = 1\n")
+    (tmp_path / "test_a.py").write_text("import a\n")
+    subprocess.run(["git", "-C", r, "add", "-A"], check=True,
+                   capture_output=True)
+    subprocess.run(["git", "-C", r, "commit", "-q", "-m", "i"], check=True,
+                   capture_output=True)
+    (tmp_path / "a.py").write_text("X = 2\n")
+    (tmp_path / "test_a.py").write_text("import a\nassert a\n")
+    assert _tests_from_diff(r, "HEAD", "") == ["test_a.py"]

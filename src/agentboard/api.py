@@ -467,17 +467,23 @@ def _tests_from_diff(repo: str, base: str, head: str) -> list[str]:
     autodetect finds nothing, the change's own diff is the next-best
     deterministic signal: a fix that came with a test names its tests file
     for us, and that file is exactly where proposals belong."""
-    r = subprocess.run(
-        ["git", "-C", repo, "diff", "--name-only", f"{base}...{head}"],
-        capture_output=True, text=True,
-    )
+    # worktree mode passes head="" (the state on disk IS the head); a
+    # triple-dot against an empty ref silently diffs nothing, which is how
+    # the gauntlet's zod run lost a test file its own diff had named
+    if head:
+        args = ["git", "-C", repo, "diff", "--name-only", f"{base}...{head}"]
+    else:
+        args = ["git", "-C", repo, "diff", "--name-only", base]
+    r = subprocess.run(args, capture_output=True, text=True)
     out: list[str] = []
     for line in r.stdout.splitlines():
         f = line.strip()
         if not f:
             continue
         b = os.path.basename(f)
-        if (".test." in b or ".spec." in b) and os.path.isfile(os.path.join(repo, f)):
+        is_testy = (".test." in b or ".spec." in b
+                    or b.startswith("test_") or b.endswith("_test.py"))
+        if is_testy and os.path.isfile(os.path.join(repo, f)):
             out.append(f)
     return out
 

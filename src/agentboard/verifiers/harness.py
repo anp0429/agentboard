@@ -376,10 +376,14 @@ class VitestHarness(Harness):
             stem = target[: -len(suffix)]
             base = os.path.basename(stem)
 
-            # 1. co-located: src/foo.ts -> src/foo.test.ts
-            colocated = f"{stem}.test{suffix}"
-            if os.path.isfile(os.path.join(repo, colocated)):
-                return colocated
+            # 1. co-located: src/foo.ts -> src/foo.test.ts (or .spec —
+            # pathe's whole suite is *.spec.ts; the old YAML picker knew
+            # the suffix and the library port forgot it, gauntlet catch 3)
+            for kind in (".test", ".spec"):
+                cand = f"{stem}{kind}{suffix}"
+                if os.path.isfile(os.path.join(repo, cand)):
+                    return cand
+            colocated = f"{stem}.test{suffix}"  # the best-GUESS for errors
 
             # 2 & 3. search test dirs for <base>.test.<ext>, then singular/plural
             variants = [base]
@@ -390,12 +394,15 @@ class VitestHarness(Harness):
             target_dir = os.path.dirname(os.path.join(repo, target))
             for name in variants:
                 hits: list[str] = []
-                for pat in (
-                    f"**/tests/**/{name}.test{suffix}",
-                    f"**/__tests__/**/{name}.test{suffix}",
-                    f"**/test/**/{name}.test{suffix}",
-                    f"**/{name}.test{suffix}",
-                ):
+                pats = []
+                for kind in (".test", ".spec"):
+                    pats += [
+                        f"**/tests/**/{name}{kind}{suffix}",
+                        f"**/__tests__/**/{name}{kind}{suffix}",
+                        f"**/test/**/{name}{kind}{suffix}",
+                        f"**/{name}{kind}{suffix}",
+                    ]
+                for pat in pats:
                     hits += _glob.glob(os.path.join(repo, pat), recursive=True)
                 hits = sorted({h for h in hits if "node_modules" not in h})
                 if len(hits) == 1:
@@ -420,10 +427,13 @@ class VitestHarness(Harness):
             # identifiers through a barrel, unjs/ufo style). Deterministic
             # regexes over real files — no model anywhere near resolution.
             candidates: list[str] = []
-            for pat in (f"**/tests/**/*.test{suffix}",
-                        f"**/test/**/*.test{suffix}",
-                        f"**/__tests__/**/*.test{suffix}",
-                        f"**/*.test{suffix}"):
+            cand_pats = []
+            for kind in (".test", ".spec"):
+                cand_pats += [f"**/tests/**/*{kind}{suffix}",
+                              f"**/test/**/*{kind}{suffix}",
+                              f"**/__tests__/**/*{kind}{suffix}",
+                              f"**/*{kind}{suffix}"]
+            for pat in cand_pats:
                 candidates += _glob.glob(os.path.join(repo, pat),
                                          recursive=True)
             candidates = sorted({c for c in candidates
