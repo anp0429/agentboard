@@ -240,6 +240,11 @@ def run_review(request: ReviewRequest, log=print) -> ReviewResult:
             return ReviewResult(exit_code=1)
         pairs.extend(extra)
 
+    if len(pairs) > 1:
+        log(f"plan: {len(pairs)} files to review — fresh proposals take "
+            "about a minute each, cache hits are instant, and the gate "
+            "itself runs in seconds")
+
     # The advisory precision layer: a SECOND model reads the source and each
     # confirmed gap's failing test, and flags likely false positives (wrong
     # assertions). It annotates only — the gate's verdict never changes.
@@ -253,6 +258,7 @@ def run_review(request: ReviewRequest, log=print) -> ReviewResult:
         auditor.base_url = provider_base
 
     run = ReviewRun(intent=intent, target=target)
+    unreviewed: list[str] = []
     for tgt, tst_path in pairs:
         if len(pairs) > 1:
             log(f"--- reviewing {tgt} ---")
@@ -284,17 +290,18 @@ def run_review(request: ReviewRequest, log=print) -> ReviewResult:
             f.source_file = tgt
         log(f"  {len(findings)} behavior(s) to gate")
         if not findings:
-            # A reviewer that proposed nothing has not reviewed anything.
-            # Reporting "no gaps" here would be a clean bill of health from
-            # an exam that never happened, so this is a hard stop, not a
-            # warning that scrolls past. The usual cause is a missing or
-            # unreachable model client (watch for [warn] lines above).
-            log("agentboard review — cannot continue:")
-            log(f"  - the reviewer proposed 0 behaviors for {tgt}. Nothing "
-                "was reviewed.")
-            log("  - check any [warn] lines above: a missing model client "
-                "or API key is the usual cause.")
-            return ReviewResult(exit_code=1)
+            # A reviewer that proposed nothing has not reviewed THIS file.
+            # Reporting "no gaps" for it would be a clean bill of health
+            # from an exam that never happened — but aborting here would
+            # discard every ALREADY-EXECUTED verdict from earlier files,
+            # which a real quota death proved is worse: evidence is the
+            # product, and finished evidence must survive a later failure.
+            # Record the failure loudly and keep what the run has earned.
+            log(f"  [not reviewed] 0 behaviors proposed for {tgt} — check "
+                "any [warn] lines above (missing model client, key, or "
+                "quota is the usual cause)")
+            unreviewed.append(tgt)
+            continue
         sub = ReviewRun(intent=intent, target=tgt, findings=findings)
         FindingVerifier(repo, profile, tests_file=tst_path,
                         timeout=req.timeout,
@@ -316,6 +323,21 @@ def run_review(request: ReviewRequest, log=print) -> ReviewResult:
                 (run.env_error + "\n" if run.env_error else "") + tag + sub.env_error
             )
 
+    if not run.findings:
+        # every file failed to produce proposals: the original hard stop.
+        log("agentboard review — cannot continue:")
+        log("  - the reviewer proposed 0 behaviors for every file. Nothing "
+            "was reviewed.")
+        log("  - check any [warn] lines above: a missing model client "
+            "or API key is the usual cause.")
+        return ReviewResult(exit_code=1)
+    if unreviewed:
+        log("\nPARTIAL RUN — the executed evidence below is real, but "
+            "incomplete. Not reviewed:")
+        for tgt in unreviewed:
+            log(f"  - {tgt} (0 behaviors proposed)")
+        log()
+
     if run.env_error:
         log("\nENVIRONMENT FAILURE: the test environment could not be "
             "prepared, so nothing was executed.")
@@ -332,11 +354,31 @@ def run_review(request: ReviewRequest, log=print) -> ReviewResult:
             log(f"  {w}")
         log()
 
+    from collections import Counter
+
+    def _cause(f):
+        return (f.observed or "").strip().splitlines()[0][:120] \
+            if f.observed else ""
+    broken_causes = Counter(
+        _cause(f) for f in run.findings
+        if f.status == "broken_test" and _cause(f))
+    causes_shown: set[str] = set()
     for f in run.findings:
         tag = f"{f.source_file}: " if len(pairs) > 1 and f.source_file else ""
         log(f"  [{f.status:14}] {tag}{f.behavior[:60]}")
         if f.observed and f.status not in ("handled", "skipped_covered"):
-            log(f"       -> {f.observed[:120]}")
+            c = _cause(f)
+            if f.status == "broken_test" and broken_causes.get(c, 0) > 1:
+                # one cause, many corpses: print the cause once with its
+                # count instead of the same line N times (a stranger reads
+                # repetition as flakiness when it's one plumbing echo)
+                if c in causes_shown:
+                    continue
+                causes_shown.add(c)
+                log(f"       -> (x{broken_causes[c]} proposals share this "
+                    f"cause) {c}")
+            else:
+                log(f"       -> {f.observed[:120]}")
         if f.artifact_note:
             log(f"       [artifact?] {f.artifact_note}")
         if f.audit:
@@ -353,7 +395,9 @@ def run_review(request: ReviewRequest, log=print) -> ReviewResult:
     )
     board = render_review_html(run, board_path)
     log(f"\n{verdict_summary(run)}")
-    log(f"{len(run.gaps)} confirmed gap(s) across {len(pairs)} file(s). "
+    reviewed = len(pairs) - len(unreviewed)
+    span = (f"{reviewed} of {len(pairs)}" if unreviewed else f"{len(pairs)}")
+    log(f"{len(run.gaps)} confirmed gap(s) across {span} file(s). "
         f"Board: {board}")
 
     if req.json_out:

@@ -29,6 +29,18 @@ from .config import (
 )
 from .review import ReviewRun
 
+def prove_board_path(now=None) -> str:
+    """A per-verb, non-overwriting board name: prove_board_<stamp>.html in
+    the system temp dir. Timestamped so tonight's board can sit next to
+    yesterday's — the board is the primary human surface, and comparing
+    runs is half its value."""
+    import tempfile
+    import time
+    stamp = time.strftime("%Y%m%d_%H%M%S", time.localtime(now))
+    return os.path.join(tempfile.gettempdir(),
+                        f"agentboard_prove_board_{stamp}.html")
+
+
 NO_KEY_SCREEN = """\
 No LLM configured. prove needs a model to propose tests
 (the verdict itself never uses one). Pick an exit:

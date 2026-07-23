@@ -281,12 +281,14 @@ def prove(args) -> int:
              "reviewed via the same run)"))
     print(f"  intent: from {'--intent' if plan.intent_source == 'flag' else 'commit message(s)'}")
 
+    from .prove import prove_board_path
     req = ReviewRequest(
         repo=repo, target=plan.targets[0], also=plan.targets[1:],
         head="" if plan.worktree else plan.head,
         base=plan.base if plan.worktree else plan.base,
         worktree=plan.worktree, intent=plan.intent,
         fresh=args.fresh, timeout=args.timeout,
+        board=prove_board_path(),
     )
     result = run_review(req)
     if result.run is None:
@@ -295,10 +297,13 @@ def prove(args) -> int:
         return 1
     print()
     print(verdict_block(result.run))
+    if result.board_path:
+        # the board is the primary human surface: name it immediately,
+        # with the command that opens it
+        print(f'  board: {result.board_path}')
+        print(f'         open "{result.board_path}"')
     for line in gap_details(result.run):
         print(line)
-    if result.board_path:
-        print(f"  board: {result.board_path}")
     return exit_code_for(result.run)
 
 

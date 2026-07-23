@@ -150,3 +150,12 @@ def test_stopped_runs_exit_nonzero_matching_their_verdict():
     assert exit_code_for(covered_only) == 0
     nothing = _run()
     assert exit_code_for(nothing) == 1
+
+
+def test_prove_board_path_is_per_verb_and_non_overwriting():
+    from agentboard.prove import prove_board_path
+    a = prove_board_path(now=1000000000)
+    b = prove_board_path(now=1000000060)
+    assert "agentboard_prove_board_" in a
+    assert a.endswith(".html")
+    assert a != b
