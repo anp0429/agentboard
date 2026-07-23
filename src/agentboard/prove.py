@@ -117,6 +117,16 @@ def verdict_block(run: ReviewRun) -> str:
     for f in run.findings:
         if f.status in n:
             n[f.status] += 1
+    return verdict_from_counts(n, run.env_error)
+
+
+def verdict_from_counts(counts: dict, env_error: str = "") -> str:
+    """The same summary from a verdict_counts dict — the shape the schema
+    v1 artifact carries — so adapters that hold the artifact (the MCP
+    server) speak the identical wording without duplicating the rules."""
+    n = {"handled": 0, "confirmed_gap": 0, "broken_test": 0,
+         "skipped_covered": 0, "timed_out": 0}
+    n.update({k: v for k, v in (counts or {}).items() if k in n})
     gaps, held = n["confirmed_gap"], n["handled"]
     executed = gaps + held
     extras = []
@@ -128,8 +138,8 @@ def verdict_block(run: ReviewRun) -> str:
         extras.append(f"{n['timed_out']} timed out (inconclusive)")
     tail = f" ({'; '.join(extras)})" if extras else ""
 
-    if run.env_error:
-        return f"STOPPED: {run.env_error.splitlines()[0]}"
+    if env_error:
+        return f"STOPPED: {env_error.splitlines()[0]}"
     if gaps:
         plural = "tests" if gaps != 1 else "test"
         return (f"BROKEN: {gaps} failing {plural}, "
