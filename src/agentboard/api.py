@@ -27,6 +27,7 @@ from dataclasses import dataclass, field, fields
 
 from .agents.critic_agent import CriticAgent
 from .agents.gap_auditor import GapAuditor
+from .verifiers.assertion_lint import lint_test
 from .agents.reviewer_agent import ReviewerAgent
 from .config import (
     ConfigError,
@@ -307,6 +308,15 @@ def run_review(request: ReviewRequest, log=print) -> ReviewResult:
                         timeout=req.timeout,
                         project_dir=project_dir, log=log,
                         harness=harness_for_profile(profile)).run(sub)
+        for f in sub.findings:
+            # deterministic brittleness lint: free, always on, advisory
+            if f.status == "confirmed_gap" and f.test_code:
+                lint = lint_test(f.test_code)
+                if lint:
+                    f.lint_note = "; ".join(lint)
+                    more = f" (+{len(lint) - 1} more)" if len(lint) > 1 else ""
+                    log(f"  [lint] brittle assertion in "
+                        f"'{f.behavior[:48]}': {lint[0]}{more}")
         if auditor is not None:
             gap_count = sum(1 for f in sub.findings if f.status == "confirmed_gap")
             if gap_count:
