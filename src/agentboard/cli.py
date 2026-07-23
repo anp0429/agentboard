@@ -267,6 +267,14 @@ def prove(args) -> int:
         print('  agentboard prove --intent "handle the empty-cart case"')
         return 1
 
+    from .config import untracked_source_files
+    ghosts = untracked_source_files(repo)
+    if ghosts:
+        shown = ", ".join(ghosts[:5]) + (" ..." if len(ghosts) > 5 else "")
+        print(f"note: {len(ghosts)} new untracked source file(s) are "
+              f"invisible to the diff and NOT reviewed: {shown}")
+        print("      include them with:  git add -N " + " ".join(ghosts[:5]))
+
     print(f"prove: {plan.diffed}")
     print(f"  targets: {', '.join(plan.targets)}"
           + ("" if len(plan.targets) == 1 else "  (first is primary; rest "

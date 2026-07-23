@@ -112,3 +112,11 @@ def test_renamed_files_appear_as_their_current_path(repo):
 def test_empty_diff_returns_empty_list_not_an_error(repo):
     assert targets_from_diff(str(repo), "main", "main") == []
     assert targets_from_diff(str(repo), "HEAD", worktree=True) == []
+
+
+def test_untracked_source_files_are_named_not_silently_ignored(repo):
+    from agentboard.config import untracked_source_files
+    (repo / "brand_new.py").write_text("N = 1\n")
+    (repo / "test_new.py").write_text("def test_n(): pass\n")
+    (repo / "notes.md").write_text("hi\n")
+    assert untracked_source_files(str(repo)) == ["brand_new.py"]

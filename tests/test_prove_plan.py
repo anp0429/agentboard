@@ -139,3 +139,14 @@ def test_exit_codes_distinguish_broken_held_stopped():
 def test_plan_dataclass_defaults_are_safe():
     p = ProvePlan(worktree=True, head="h", base="HEAD")
     assert p.targets == [] and p.intent == ""
+
+
+def test_stopped_runs_exit_nonzero_matching_their_verdict():
+    only_broken = _run(broken_test=3)
+    assert verdict_block(only_broken).startswith("STOPPED:")
+    assert exit_code_for(only_broken) == 1
+    covered_only = _run(skipped_covered=4, broken_test=2)
+    assert verdict_block(covered_only).startswith("NOTHING NEW EXECUTED")
+    assert exit_code_for(covered_only) == 0
+    nothing = _run()
+    assert exit_code_for(nothing) == 1

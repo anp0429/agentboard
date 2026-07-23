@@ -150,11 +150,25 @@ def gap_details(run: ReviewRun) -> list[str]:
 
 
 def exit_code_for(run: ReviewRun | None) -> int:
-    """0 = held / nothing-new, 2 = broken, 1 = could not run. Distinct
-    codes because prove's caller is often an agent loop, and BROKEN must
-    be programmatically distinguishable from HELD."""
+    """0 = held or nothing-new-covered, 2 = broken, 1 = could not run OR
+    ran but produced no evidence at all. Distinct codes because prove's
+    caller is often an agent loop, and BROKEN must be programmatically
+    distinguishable from HELD. The last rule exists because the gate's own
+    first self-review caught the mismatch: a run where every proposal
+    broke printed STOPPED but exited 0. The exit code and the verdict line
+    must always tell the same story."""
     if run is None:
         return 1
     if run.env_error:
         return 1
-    return 2 if run.gaps else 0
+    executed = covered = 0
+    for f in run.findings:
+        if f.status in ("handled", "confirmed_gap"):
+            executed += 1
+        elif f.status == "skipped_covered":
+            covered += 1
+    if run.gaps:
+        return 2
+    if executed or covered:
+        return 0
+    return 1  # STOPPED: only broken/timed-out/nothing — no evidence exists

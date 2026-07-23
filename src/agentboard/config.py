@@ -521,3 +521,21 @@ def targets_from_diff(
             continue
         out.append(rel)
     return sorted(out)
+
+
+def untracked_source_files(repo_root: str) -> list[str]:
+    """New source files git doesn't track yet. Worktree diffs cannot see
+    them, so prove names them out loud instead of reviewing half a change
+    in silence; `git add -N <file>` makes them visible to the diff."""
+    r = subprocess.run(
+        ["git", "-C", repo_root, "ls-files", "--others", "--exclude-standard"],
+        capture_output=True, text=True,
+    )
+    if r.returncode != 0:
+        return []
+    out = []
+    for line in r.stdout.splitlines():
+        rel = line.strip()
+        if rel and rel.endswith(_PROVE_SOURCE_EXTS)                 and not _looks_like_test_file(rel):
+            out.append(rel)
+    return sorted(out)

@@ -140,7 +140,10 @@ def run_review(request: ReviewRequest, log=print) -> ReviewResult:
                 for t in diff_tests:
                     log(f"    --tests {t}")
             else:
-                log("  Point me at it directly:  --tests path/to/your.test.ts")
+                hint = ("tests/test_your_module.py"
+                        if target.endswith(".py")
+                        else "path/to/your.test.ts")
+                log(f"  Point me at it directly:  --tests {hint}")
             return ReviewResult(exit_code=1)
 
     need_critic = cfg.run_critic and not req.no_critic
