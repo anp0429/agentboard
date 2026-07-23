@@ -100,6 +100,22 @@ Our own unit test had blessed `src.pkg.mod` as a module path; the review
 corrected the test too — `pkg.mod` is what pip installs. All five fixed
 the same hour, each with the review's scenario as a regression test.
 
+## Round four (run fingerprint 6e0f5bfb428f68c7)
+
+Written after the post that says "sixteen," because the tool did not stop
+when the story did. The next board: zero broken proposals again — the
+import surface holds — and four more likely_real gaps, now in Python's
+darker binding semantics. A module-level `for` or `with` target persists
+as a module global and belongs on the surface; a top-level `del` removes
+a binding the surface was still advertising; a top-level walrus
+(`name := ...`) binds a real global; and a path with a non-identifier
+segment produced a truncated module path stated with full confidence,
+when the honest output is no surface at all (unless the cut lands at a
+src/lib source root, which is self-contained). The same board verified,
+approvingly, that exception-handler aliases are correctly absent because
+Python itself deletes them after the handler. The reviewer is reading
+the language spec at this point. Running total: twenty.
+
 ## The ledger
 
 Sixteen real defects found by the tool in and around its own code in one

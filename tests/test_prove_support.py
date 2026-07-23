@@ -210,3 +210,39 @@ def test_import_surface_regular_module_imports_are_not_api(tmp_path):
     out = import_surface(str(tmp_path), "mod.py")
     assert "fn" in out
     assert "json" not in out
+
+
+def test_import_surface_round_four_regressions(tmp_path):
+    """Run 6e0f5bfb428f68c7: module-level for/with targets persist as
+    globals and are listed; a del removes its name; a top-level walrus
+    binds; names inside nested scopes still never leak."""
+    from agentboard.agents.reviewer_agent import import_surface
+    (tmp_path / "mod.py").write_text(
+        "for item in [1]:\n    pass\n"
+        "with open(__file__) as handle:\n    pass\n"
+        "TEMP = 1\n"
+        "del TEMP\n"
+        "total = (walrus_public := 5) + 1\n"
+        "def fn():\n    inner = (nested_walrus := 2)\n    return inner\n"
+    )
+    out = import_surface(str(tmp_path), "mod.py")
+    for name in ("item", "handle", "walrus_public", "total", "fn"):
+        assert name in out
+    assert "TEMP" not in out
+    assert "nested_walrus" not in out
+    assert "inner" not in out
+
+
+def test_import_surface_refuses_untrustworthy_truncated_paths(tmp_path):
+    """A non-identifier path segment below any source root makes the
+    module path a guess; the honest surface is none at all."""
+    from agentboard.agents.reviewer_agent import import_surface
+    bad = tmp_path / "my-lib" / "pkg"
+    bad.mkdir(parents=True)
+    (bad / "mod.py").write_text("def fn():\n    pass\n")
+    assert import_surface(str(tmp_path), "my-lib/pkg/mod.py") == ""
+    ok = tmp_path / "packages" / "my-app" / "src" / "pkg"
+    ok.mkdir(parents=True)
+    (ok / "mod.py").write_text("def fn():\n    pass\n")
+    out = import_surface(str(tmp_path), "packages/my-app/src/pkg/mod.py")
+    assert "`pkg.mod`" in out  # cut at a src root: self-contained, trusted
