@@ -130,7 +130,13 @@ def run_review(request: ReviewRequest, log=print) -> ReviewResult:
     # friendly, specific guidance for the most common first-run stumble:
     # we couldn't find the tests file and the user didn't say where it is.
     if not req.tests and not os.path.isfile(os.path.join(repo, tests)):
-        diff_tests = _tests_from_diff(repo, base, head)
+        # catch 4b: in worktree mode the change IS the working tree, so the
+        # fallback must diff the worktree (head=""), not base...branch —
+        # head was reconstructed above and is never empty here, which is
+        # how the function-level fix sat correct and unreachable while
+        # zod's run still died (tested the organ, not the body)
+        diff_tests = _tests_from_diff(repo, base,
+                                      "" if req.worktree else head)
         if len(diff_tests) == 1:
             tests = diff_tests[0]
             log(f"tests: {tests} (the change's own diff names it)")

@@ -271,8 +271,11 @@ def prove(args) -> int:
 
     plan = plan_prove(repo, args.intent)
     if not plan.targets:
-        print(f"prove compared {plan.diffed}: no reviewable source files "
-              f"changed (tests and deletions don't count). Nothing to do.")
+        # verdict-class token FIRST, same wording as the MCP tool: an agent
+        # grepping ^NOTHING must find it on every surface (the one
+        # deliberate divergence between verbs is exit codes, never wording)
+        print(f"NOTHING TO PROVE: compared {plan.diffed}; no reviewable "
+              "source files changed (tests and deletions do not count)")
         return 0
     if not plan.intent:
         print("prove needs one thing it couldn't derive: what is this "
