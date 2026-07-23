@@ -42,6 +42,7 @@ direction this gate is allowed to be wrong in.
 
 from __future__ import annotations
 
+import ast
 import os
 import re
 import xml.etree.ElementTree as ET
@@ -85,22 +86,63 @@ class PytestHarness(Harness):
         out = []
         for line in test_code.splitlines():
             s = line.strip()
-            if s.startswith(("import ", "from ")) and s in have:
+            if (s.startswith(("import ", "from ")) and s in have
+                    and not line[:1].isspace()):
+                # column-0 duplicates only: an INDENTED import lives inside
+                # a test body, and deleting it rewrites the proposal — the
+                # gate proved this mutates test bodies (run ff36b2226dfda3eb)
                 continue
             out.append(line)
         return "\n".join(out)
 
     # ---- naming ------------------------------------------------------------
 
+    @staticmethod
+    def _test_node(test_code: str):
+        """The REAL test function in a proposal, found by parsing, not by
+        regex over raw text: docstring example code that looks like a test
+        def cannot be selected (the gate proved the regex could be fooled,
+        run ff36b2226dfda3eb). Returns (class_name_or_None, fn_name,
+        def_lineno) for the first test_* function, honoring class nesting
+        so serial node ids select the exact collected testcase."""
+        try:
+            tree = ast.parse(test_code or "")
+        except SyntaxError:
+            return None
+        for node in tree.body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))                     and node.name.startswith("test_"):
+                return None, node.name, node.lineno
+            if isinstance(node, ast.ClassDef):
+                for sub in node.body:
+                    if isinstance(sub, (ast.FunctionDef,
+                                        ast.AsyncFunctionDef))                             and sub.name.startswith("test_"):
+                        return node.name, sub.name, sub.lineno
+        return None
+
     def test_title(self, test_code: str) -> str | None:
-        m = self._DEF_RE.search(test_code or "")
+        found = self._test_node(test_code)
+        if found:
+            cls, name, _ = found
+            # class-qualified so serial_command's {file}::{title} composes
+            # into the exact pytest node id, TestX::test_y included
+            return f"{cls}::{name}" if cls else name
+        m = self._DEF_RE.search(test_code or "")  # unparsable: old behavior
         return m.group(1) if m else None
 
     def mark_title(self, test_code: str, mark: str) -> str | None:
         # stamp the mark into the function NAME (test_x -> test_x___ab0___):
         # the junit `name` attribute carries it, `-k` can filter on it, and
-        # it cannot collide with a host test's name.
-        code, n = self._DEF_RE.subn(
+        # it cannot collide with a host test's name. The def line comes
+        # from the ast, so docstring look-alikes are never stamped.
+        found = self._test_node(test_code)
+        if found:
+            _, name, lineno = found
+            lines = test_code.splitlines()
+            i = lineno - 1
+            if 0 <= i < len(lines) and name in lines[i]:
+                lines[i] = lines[i].replace(name, name + mark, 1)
+                return "\n".join(lines)
+        code, n = self._DEF_RE.subn(  # unparsable: old behavior
             lambda m: m.group(0).replace(m.group(1), m.group(1) + mark, 1),
             test_code,
             count=1,
@@ -144,19 +186,60 @@ class PytestHarness(Harness):
                 return ("failed" if child.tag == "failure" else child.tag), fm
         return "passed", ""
 
+    # Lines that ARE a raised exception, not lines that merely mention
+    # one. Two shapes qualify: a raising line ("E   AssertionError: ...",
+    # "NameError: name 'x' is not defined" — colon or end-of-line required
+    # so prose and quoted source never match) and pytest's longrepr
+    # location tail ("test_s.py:5: AssertionError"), which is the ONLY
+    # place a bare rewritten `assert` names AssertionError at all.
+    _EXC_LINE = re.compile(
+        r"^(?:E\s+)?"
+        r"([A-Za-z_][\w.]*(?:Error|Exception)|Failed|KeyboardInterrupt)"
+        r"(?::|$)")
+    _EXC_TAIL = re.compile(
+        r"^\S+:\d+:\s+"
+        r"([A-Za-z_][\w.]*(?:Error|Exception)|Failed|KeyboardInterrupt)$")
+
     def classify_failure(self, fm: str) -> tuple[str, str]:
-        """One failure report -> (kind, first_line). Same conservative brain
-        as the vitest harness: only a named AssertionError is an assertion.
-        pytest's rewritten `assert` qualifies because the junit longrepr's
-        final traceback line names AssertionError; a NameError or crash
-        names itself instead and stays the test's problem."""
+        """One failure report -> (kind, first_line). Only the RAISED
+        exception decides, read from the last line that names one in
+        raising position. Substring matching over the whole report was the
+        original brain here, and the gate itself broke it (run
+        94669614e770c539): a NameError whose traceback contained the text
+        "AssertionError" was classified as an assertion gap, and an
+        assertion whose text mentioned timeouts was classified as a
+        timeout. A crash mentioning an exception is not that exception.
+        Unrecognizable reports classify as load_error, never assertion:
+        fabricating a gap is the one mistake this function must not make."""
         first = fm.strip().splitlines()[0][:200] if fm.strip() else ""
-        if "timed out" in fm.lower() or first.startswith("Failed: Timeout"):
-            # no per-test timeouts without a plugin, but if one IS installed
-            # in the repo's env, its verdict routes to ambiguity, not a gap.
-            return "timeout", first
-        if "AssertionError" in fm:
+        exc = ""
+        payload = ""
+        for line in fm.splitlines():
+            stripped = line.strip()
+            m = self._EXC_LINE.match(stripped) or self._EXC_TAIL.match(stripped)
+            if m:
+                exc = m.group(1)
+                payload = stripped
+        # ORDER MATTERS, twice proven by the gate on itself: an identified
+        # AssertionError wins outright — its human message may legitimately
+        # talk about timeouts (run ff36b2226dfda3eb caught the first-line
+        # heuristic firing before the exception check). Timeout wording is
+        # consulted only on the exception's own line, or, when no exception
+        # was identified at all, on the first line (runner-generated
+        # reports like "Error: Test timed out in 5000ms" have no traceback).
+        if exc == "AssertionError" or exc.endswith(".AssertionError"):
             return "assertion", first
+        if exc == "Failed" and "Timeout" in payload:
+            # pytest-timeout raises Failed: Timeout >Ns; plugin verdicts
+            # route to ambiguity, not to a gap.
+            return "timeout", first
+        if exc.endswith("TimeoutError"):
+            return "timeout", first
+        if exc and "timed out" in payload.lower():
+            return "timeout", first
+        if not exc and ("timed out" in first.lower()
+                        or first.startswith("Failed: Timeout")):
+            return "timeout", first
         return "load_error", first
 
     def read_verdict(self, out: str) -> tuple[Status, str]:
@@ -245,6 +328,10 @@ class PytestHarness(Harness):
         if not target.endswith(".py"):
             return ""
         base = os.path.basename(target)[: -len(".py")]
+        if base == "__init__":
+            # a package's behavior is imported by the package's name, and
+            # test___init__.py is a file nobody has ever written on purpose
+            base = os.path.basename(os.path.dirname(target)) or base
         target_dir = os.path.dirname(os.path.join(repo, target))
         names = (f"test_{base}.py", f"{base}_test.py")
 
@@ -283,6 +370,57 @@ class PytestHarness(Harness):
                 best = max(hits, key=_shared)
                 if _shared(best) > len(repo):
                     return os.path.relpath(best, repo)
+
+        # 2.5. import matching, ported from the self-review workflow's
+        # picker where it earned its keep: repos that name tests by
+        # behavior (test_config_preflight.py for config.py) break every
+        # basename rule, but the import statement is the real link. A
+        # test-shaped file that imports the target's module IS its suite.
+        # Selection is deterministic: unique hit wins; several hits prefer
+        # filenames containing the stem; still several, closest shared
+        # dir prefix; final tie, first in sorted order.
+        import ast as _ast
+
+        def _really_imports(path: str, stem: str) -> bool:
+            # the AST, not the text: docstrings, comments, and quoted
+            # examples cannot fabricate a test relationship (the gate
+            # proved the regex version could be fooled by exactly those),
+            # and multiline aliased from-imports are seen like any other.
+            try:
+                with open(path, encoding="utf-8", errors="replace") as fh:
+                    tree = _ast.parse(fh.read())
+            except (OSError, SyntaxError, ValueError):
+                return False
+            for node in _ast.walk(tree):
+                if isinstance(node, _ast.Import):
+                    if any(stem in a.name.split(".") for a in node.names):
+                        return True
+                elif isinstance(node, _ast.ImportFrom):
+                    if stem in (node.module or "").split("."):
+                        return True
+                    if any(a.name == stem for a in node.names):
+                        return True
+            return False
+
+        candidates = _clean(
+            _glob.glob(os.path.join(repo, "**", "test_*.py"), recursive=True)
+            + _glob.glob(os.path.join(repo, "**", "*_test.py"), recursive=True)
+        )
+        importers = [c for c in candidates if _really_imports(c, base)]
+        if importers:
+            named = [h for h in importers
+                     if base in os.path.basename(h)]
+            pool = named or importers
+            if len(pool) == 1:
+                return os.path.relpath(pool[0], repo)
+
+            def _shared_i(h: str) -> int:
+                return len(os.path.commonpath([target_dir,
+                                               os.path.dirname(h)]))
+            best = max(pool, key=_shared_i)
+            if _shared_i(best) > len(repo):
+                return os.path.relpath(best, repo)
+            return os.path.relpath(sorted(pool)[0], repo)
 
         # 3. sole test file in the target's own directory (the
         # one-suite-per-module-directory layout). Explicit targets only,
