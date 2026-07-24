@@ -3,11 +3,11 @@
 [![CI](https://github.com/anp0429/agentboard/actions/workflows/ci.yml/badge.svg)](https://github.com/anp0429/agentboard/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-A review gate that verifies a change by writing new edge-case tests and
-executing them, not by judging diffs. It does not run your existing test
-suite: an LLM proposes tests from your intent and your change, and a
-deterministic harness runs each proposed test against the real code in a
-clean checkout. A behavior is reported as a gap only if its test compiles, runs,
+A review gate that proposes edge cases and executes them before
+judging. It does not grade diffs and does not run your existing suite:
+the edge cases come from an LLM reading your intent and your change, and
+a deterministic harness runs each proposed test against the real code in
+a clean checkout. A behavior is reported as a gap only if its test compiles, runs,
 and fails. No model is involved in the pass or fail decision.
 
 Two verbs, one engine. `prove` is the author-side verb: an agent (or you)
