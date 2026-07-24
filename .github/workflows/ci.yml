@@ -42,7 +42,10 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install ruff
-        run: pip install ruff
+        # pinned: unpinned ruff drifted to a release enabling rules this
+        # codebase was never checked against (147 findings overnight, no
+        # code change). Bumping is a deliberate chore, not a CI surprise.
+        run: pip install "ruff==0.15.22"
       - name: Lint
         run: ruff check src/ tests/ examples/
 

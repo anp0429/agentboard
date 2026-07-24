@@ -85,7 +85,14 @@ class ReviewRequest:
         """Build from a parsed argparse namespace. Attribute access is
         deliberate: a ReviewRequest field with no matching CLI flag fails
         loudly here instead of silently defaulting."""
-        return cls(**{f.name: getattr(ns, f.name) for f in fields(cls)})
+        # only pass attributes the namespace actually has; anything absent
+        # falls to the dataclass default. A new request field without a
+        # matching CLI flag crashed the real CLI while every direct-
+        # construction test stayed green — the Action caught it on its own
+        # PR (the gate gating its own growth), and this makes the class
+        # of bug structurally impossible.
+        return cls(**{f.name: getattr(ns, f.name)
+                      for f in fields(cls) if hasattr(ns, f.name)})
 
 
 @dataclass

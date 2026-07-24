@@ -361,6 +361,8 @@ def main(argv: list[str] | None = None) -> int:
                         "don't correlate. Default: the critic model.")
     r.add_argument("--no-audit", action="store_true",
                    help="skip the advisory gap auditor")
+    r.add_argument("--no-repair", action="store_true",
+                   help="skip the one bounded repair round for broken proposals")
     r.add_argument("--fresh", action="store_true", help="resample proposals (ignore cache)")
     r.add_argument("--timeout", type=int, default=1800, help="per-gate timeout seconds")
     r.add_argument("--also", action="append", default=[],
