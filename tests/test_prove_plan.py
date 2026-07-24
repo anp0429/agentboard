@@ -93,7 +93,7 @@ def test_llm_configured_requires_key_or_base_url():
 
 def test_broken_headline_counts_gaps_and_executed_attempts():
     line = verdict_block(_run(confirmed_gap=2, handled=7, broken_test=3))
-    assert line.startswith("BROKEN: 2 failing tests, 9 attempts executed")
+    assert line.startswith("BROKEN: 2 confirmed gaps, 9 attempts executed")
     assert "3 proposals broke before running" in line
 
 

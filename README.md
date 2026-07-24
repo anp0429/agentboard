@@ -9,11 +9,19 @@ deterministic harness runs each test against the real code in a clean
 checkout. A behavior is reported as a gap only if its test compiles, runs,
 and fails. No model is involved in the pass or fail decision.
 
-One tool, two moments: the author runs it before pushing and fixes what is
-real, so the change arrives cleaner; the maintainer sees it on the pull
-request and decides faster. Nobody is replaced at either end.
+Two verbs, one engine. `prove` is the author-side verb: an agent (or you)
+changes code, prove tries to break it before it merges. Zero flags — it
+reads your dirty tree or your branch, picks targets from the diff, derives
+intent from your commits, and answers **BROKEN** (N confirmed gaps,
+each a failing test you can run yourself), **HELD** (N executed attempts, none broke it —
+quantified absence, never certification), or **STOPPED** (what happened
+instead, cause first). Exit codes 0/2/1, built for agent loops: write,
+prove, fix the failing test, prove again. `review` is the maintainer-side
+verb for pull requests and CI: same engine, always-advisory exit codes.
+Nobody is replaced at either end.
 
 ```
+agentboard prove
 agentboard review --target src/parser.ts --intent "handle empty input"
 ```
 
@@ -48,8 +56,14 @@ agentboard demo --fixed
 It gates a small bundled project with one planted bug. Proposals are
 pre-generated, so the demo exercises the deterministic part of the pipeline:
 the gate finds the gap, and finds it resolved on the fixed variant. A live
-review needs `OPENAI_API_KEY` (reviewer) and, for the advisory auditor,
-`ANTHROPIC_API_KEY`.
+run needs `OPENAI_API_KEY` (reviewer) and, for the advisory auditor,
+`ANTHROPIC_API_KEY` — or point `OPENAI_BASE_URL` at Ollama and pay nobody.
+
+Then, in any repo with uncommitted work or a feature branch:
+
+```
+agentboard prove
+```
 
 ## Usage
 
@@ -184,8 +198,12 @@ For any other MCP client (Cursor, etc.), the server config is:
 { "agentboard": { "command": "agentboard-mcp" } }
 ```
 
-This exposes one tool, `review`, which returns the same schema_version-1
-artifact as `--json-out`. It defaults to `--worktree` mode: the diff is the
+This exposes two tools. `prove` is the agent's loop verb: hand it a repo
+(and an `intent` for uncommitted work), get back the artifact with a
+one-line `verdict` first — BROKEN with runnable failing tests attached,
+HELD with the executed-attempt count, or STOPPED with the cause. The
+wording is shared with the CLI by construction and cannot drift. `review`
+returns the same schema_version-1 artifact as `--json-out`. It defaults to `--worktree` mode: the diff is the
 working tree's uncommitted edits and the sandbox executes that same on-disk
 state, which is the question an agent mid-session is actually asking.
 `intent` is required: the calling agent states what its change is meant to
@@ -205,9 +223,11 @@ the calling agent's (and ultimately a human's) job.
 2. Gate. Each test runs against the real code in a clean checkout. The gate
    is deterministic and contains no LLM. Verdicts: `handled`,
    `confirmed_gap`, `broken_test`, `timed_out`, `skipped_covered`.
-   JS/TS repos are gated under vitest; Python repos are now gated under
-   pytest with the same verdict taxonomy. The pytest path is new and
-   should be treated as experimental.
+   JS/TS repos are gated under vitest; Python repos are gated under
+   pytest with the same verdict taxonomy. The pytest path is newer, and
+   was hardened the honest way: five self-review rounds and a
+   ten-stranger-repo gauntlet (see notes/prove-birth.md and
+   notes/gauntlet.md).
 3. Board. Verdicts render to an HTML review board. A run fingerprint lets any
    two runs be compared with one string.
 4. Precision. Two advisory layers annotate confirmed gaps without touching
@@ -217,6 +237,27 @@ the calling agent's (and ultimately a human's) job.
    cause, not N bugs (found the hard way when nine "gaps" shared one
    unwrapping mistake). Separately, a different model audits each confirmed
    gap for wrong assertions. Neither ever changes a verdict.
+
+## What it runs on
+
+Verdicts require executing tests, so support is defined by harnesses, not
+adjectives. Today: **vitest** (TS/JS — npm and pnpm, workspaces, `.test`
+and `.spec` suites, tests matched by path or by the target's exported
+names when filenames don't cooperate) and **pytest** (Python — src and
+flat layouts, PEP 735 dependency groups). Proven against a ten-stranger-
+repo launch gauntlet; the scorecard, misses included, is in
+`notes/gauntlet.md`.
+
+One guarantee that holds on any repo in the world: prove never lies about
+scope. It either reaches an executed verdict, or it STOPS with the actual
+cause as the first line — never a silent pass, never a model's guess
+dressed as one. Every environment that defeats it becomes a named fix
+with that repo as the permanent regression test; robustness ratchets the
+same way recall does.
+
+Your stack next? Open an issue with a clonable repo. A harness is one
+file behind three contracts: find the tests, execute a proposal, classify
+the raised error.
 
 ## Caching and cost
 
@@ -286,6 +327,13 @@ not `/models`.
 
 ## Results from real repositories
 
+- Its own repository, first: before `prove` merged, it reviewed its own
+  uncommitted diff — and across five self-review rounds found twenty-five
+  real defects in and around its own code, including a false-positive
+  generator inside its own verdict classifier and a hole in the fix to
+  that bug hours later. Broken proposals went 33, 29, 0, 0, 0 as the
+  rounds taught the proposer its own repo. The full ledger, severity-
+  labeled, with run fingerprints: [notes/prove-birth.md](notes/prove-birth.md).
 - [supabase/mcp#317](https://github.com/supabase/mcp/pull/317): proposed
   tests reproduced a bug on main. Composite foreign keys in `list_tables`
   returned the cartesian product of column pairs, so an N-column key reported
@@ -419,10 +467,12 @@ is dropped.
   A single hardcoded pin broke in both directions (old pnpm dies on Node 22;
   pnpm 9 rejects a pnpm 10/11 `pnpm-workspace.yaml` config), so the rule is
   "run under the version this config was written for."
-- Monorepos with multiple vitest projects or per-package configs need a
-  one-line `.agentboard.toml` naming the `project` or `filter`, the same way
-  you would scope CI. Unscoped, the runner may boot an unrelated (e.g.
-  browser) project and report an environment failure rather than a verdict.
+- Monorepos with multiple vitest projects usually work unscoped now (the
+  environment probe and the proposals run beside the resolved tests file,
+  inside whichever project owns it — zod's workspace gates unscoped). A
+  one-line `.agentboard.toml` naming the `project` or `filter` remains the
+  right call when a repo boots special environments (browser projects,
+  custom pools), the same way you would scope CI.
 
 ## Design invariants
 
