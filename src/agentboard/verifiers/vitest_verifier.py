@@ -80,6 +80,21 @@ def unfrozen_install(install_cmd: list[str]) -> list[str] | None:
 # --- the explicit, per-repo facts the verifier cannot guess -----------------
 
 _PROBE_REL = "__agentboard_env_probe__.test.ts"
+
+
+def smoke_probe_for(tests_file: str) -> tuple[str, str]:
+    """Probe placed BESIDE the tests file, wearing the suite's own flavor
+    (.test/.spec, same extension). At repo root a monorepo's project
+    includes disown a stray file — vitest exits 1 with "No test files
+    found" (gauntlet catch 5b, reproduced on zod's workspace; the dir
+    probe on the same warm copy exits 0)."""
+    import posixpath
+    base = posixpath.basename(tests_file)
+    kind = ".spec" if ".spec." in base else ".test"
+    ext = posixpath.splitext(base)[1] or ".ts"
+    rel = posixpath.join(posixpath.dirname(tests_file),
+                         f"__agentboard_env_probe__{kind}{ext}")
+    return rel, _PROBE_CONTENT
 _PROBE_CONTENT = (
     'import {{ expect, test }} from "vitest";\n'
     'test("___agentboard_env_probe___", () => {{\n'

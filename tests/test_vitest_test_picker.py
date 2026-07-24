@@ -79,3 +79,16 @@ def test_smoke_uses_a_real_probe_file_not_filter_tricks():
         assert prof.smoke_probe is not None
         assert prof.smoke_probe[0] == _PROBE_REL
         assert "___agentboard_env_probe___" in prof.smoke_probe[1]
+
+
+def test_probe_placement_follows_the_tests_file():
+    # catch 5b: a root probe is disowned by monorepo project includes;
+    # the probe lives beside the tests file, wearing the suite's flavor
+    from agentboard.verifiers.vitest_verifier import smoke_probe_for
+    rel, content = smoke_probe_for("packages/x/tests/y.test.ts")
+    assert rel == "packages/x/tests/__agentboard_env_probe__.test.ts"
+    rel2, _ = smoke_probe_for("test/index.spec.ts")
+    assert rel2 == "test/__agentboard_env_probe__.spec.ts"
+    rel3, _ = smoke_probe_for("demo.test.js")
+    assert rel3 == "__agentboard_env_probe__.test.js"
+    assert "___agentboard_env_probe___" in content

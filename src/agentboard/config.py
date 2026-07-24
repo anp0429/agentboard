@@ -318,6 +318,15 @@ def build_profile(repo_root: str, cfg: Config, tests_file: str,
             # verifier retries unfrozen (with a note) if the pin is stale
             frozen=os.path.isfile(os.path.join(scan_root, "pnpm-lock.yaml")),
         )
+    if kind in ("npm-vitest", "pnpm-vitest") or prof.kind == "vitest":
+        # catch 5b: aim the smoke probe at the tests file's own directory,
+        # in the suite's own flavor — a root-level probe is disowned by
+        # monorepo project includes ("No test files found", exit 1)
+        from .verifiers.vitest_verifier import smoke_probe_for
+        rel, content = smoke_probe_for(tests_file)
+        prof.smoke_probe = (rel, content)
+        if prof.smoke_cmd:
+            prof.smoke_cmd = prof.smoke_cmd[:-1] + [rel]
     if cfg.harness_notes:
         prof.harness_notes = cfg.harness_notes.strip()
     return prof

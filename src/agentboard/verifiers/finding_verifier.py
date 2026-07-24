@@ -239,9 +239,16 @@ class FindingVerifier:
                 smoke = self._run(self.profile.smoke_cmd, self._workdir(repo))
                 phases.append(f"smoke {time.monotonic() - t0:.1f}s")
                 if smoke.returncode != 0:
+                    # cause first: npm's warn/notice chatter arrives ahead
+                    # of the real error and buried it on two gauntlet
+                    # boards; the report must headline the failure
+                    tail = _proc_tail(smoke)
+                    kept = [ln for ln in tail.splitlines()
+                            if not ln.strip().lower().startswith(
+                                ("npm warn", "npm notice"))]
                     self._prep_error = (
                         "environment smoke probe failed: "
-                        f"{_proc_tail(smoke)}"
+                        + ("\n".join(kept).strip() or tail)
                     )
             except subprocess.TimeoutExpired:
                 self._prep_error = (
