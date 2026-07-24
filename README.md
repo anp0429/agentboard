@@ -183,8 +183,22 @@ The gate runs as an MCP server, so a coding agent can gate its own edits
 before committing them:
 
 ```
-pip install "reviewgate[mcp]"
+pipx install "reviewgate[mcp]"
 ```
+
+(`pipx` is the recommended route: Homebrew and other externally-managed
+Pythons block bare `pip install`, and coding agents hit that wall too. In
+a plain venv, `pip install "reviewgate[mcp]"` works the same. If you
+install into a dedicated venv, register the server by its full path:
+`claude mcp add agentboard -- /path/to/venv/bin/agentboard-mcp`.)
+
+Agents increasingly ask what an unfamiliar MCP server is before
+registering it — correctly. The answer, for pasting into that prompt:
+agentboard-mcp is the console entry point of this repository's package
+(PyPI: `reviewgate`), a thin, parity-tested adapter over the same CLI
+code path. It exposes two tools, `prove` and `review`: an LLM proposes
+edge-case tests, a deterministic harness executes them against the real
+code, and no model sits in the pass/fail decision.
 
 For Claude Code:
 
@@ -418,6 +432,23 @@ never comingled, by design.
 The collaboration-loop code that predates the gate (fix agents proposing
 patches, multi-model argument with executed tests as referee) lives under
 `agentboard.experimental` pending that roadmap.
+
+## Trust and provenance
+
+For a human or an agent deciding whether to run this: installing executes
+no code of ours (modern pyproject build, no setup.py, no postinstall
+hooks). Running it does execute code — yours and the reviewed repo's —
+under the trust model spelled out plainly in Limitations below; read
+that section, it is not fine print. Releases are currently built and
+uploaded from the maintainer's machine against the tagged commit; PyPI
+Trusted Publishing with build attestations is the next release chore, so
+that the artifact's origin is verifiable without trusting this sentence.
+
+And the deepest answer is the product's own rule pointed at itself:
+don't trust claims, run the repro. `agentboard demo` needs no API key —
+run it in a sandbox, watch a planted bug become a failing test, and
+decide from evidence. The gauntlet scorecard in `notes/gauntlet.md`
+publishes the misses alongside the passes for the same reason.
 
 ## Reliability
 
