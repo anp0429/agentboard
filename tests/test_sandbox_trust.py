@@ -278,3 +278,17 @@ def test_install_timeout_is_a_run_level_banner(tmp_path, monkeypatch):
     v.run(run)
     assert run.env_error == "install did not finish within 7s"
     assert run.findings[0].status == "broken_test"
+
+
+def test_smoke_noise_strip_peels_the_label_before_filtering():
+    # the prefix bug: "stderr: npm warn ..." doesn't START with "npm warn",
+    # so the first filter kept everything and the real cause stayed buried
+    from agentboard.verifiers.finding_verifier import _strip_pm_noise
+    tail = ("stderr: npm warn Unknown env config \"store-dir\".\n"
+            "npm notice something\n"
+            "Error: Cannot find module 'vitest'")
+    out = _strip_pm_noise(tail)
+    assert out.startswith("stderr: Error: Cannot find module")
+    assert "npm warn" not in out
+    # all-noise tails fall back to the raw tail rather than emptiness
+    assert _strip_pm_noise("stderr: npm warn only") == "stderr: npm warn only"

@@ -93,6 +93,25 @@ def _copy_discrepancies(src: str, dst: str, limit: int = 5) -> list[str]:
     return diffs
 
 
+def _strip_pm_noise(tail: str) -> str:
+    """Cause first: npm's warn/notice chatter arrives ahead of the real
+    error and buried it on two gauntlet boards. _proc_tail labels its
+    first line ("stderr: npm warn ..."), so the label must be peeled
+    before filtering — the first version of this filter checked the
+    labeled line and kept everything (the prefix bug the third board
+    exposed). The label is reattached to whatever real cause remains."""
+    label = ""
+    body = tail
+    for lb in ("stderr: ", "stdout: "):
+        if body.startswith(lb):
+            label, body = lb, body[len(lb):]
+            break
+    kept = [ln for ln in body.splitlines()
+            if not ln.strip().lower().startswith(("npm warn", "npm notice"))]
+    cleaned = "\n".join(kept).strip()
+    return (label + cleaned) if cleaned else tail
+
+
 class FindingVerifier:
     def __init__(
         self,
@@ -239,16 +258,9 @@ class FindingVerifier:
                 smoke = self._run(self.profile.smoke_cmd, self._workdir(repo))
                 phases.append(f"smoke {time.monotonic() - t0:.1f}s")
                 if smoke.returncode != 0:
-                    # cause first: npm's warn/notice chatter arrives ahead
-                    # of the real error and buried it on two gauntlet
-                    # boards; the report must headline the failure
-                    tail = _proc_tail(smoke)
-                    kept = [ln for ln in tail.splitlines()
-                            if not ln.strip().lower().startswith(
-                                ("npm warn", "npm notice"))]
                     self._prep_error = (
                         "environment smoke probe failed: "
-                        + ("\n".join(kept).strip() or tail)
+                        + _strip_pm_noise(_proc_tail(smoke))
                     )
             except subprocess.TimeoutExpired:
                 self._prep_error = (
