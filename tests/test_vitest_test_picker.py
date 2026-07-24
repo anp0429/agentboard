@@ -1,0 +1,94 @@
+"""TS import matching (resolver step 3.5), born from gauntlet run 1:
+unjs/ufo tests src/utils.ts in test/utilities.test.ts — basename
+conventions cannot survive human naming. Path matching catches tests
+that import ".../<base>" outright (defu style); name matching catches
+imports of the target's exported identifiers through a barrel (ufo
+style). A tie is ambiguity, and ambiguity asks instead of guessing."""
+
+import os
+
+from agentboard.verifiers.harness import VitestHarness as V
+
+
+def _mk(tmp_path, rel, content=""):
+    p = tmp_path / rel
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(content)
+    return str(p)
+
+
+def test_name_matching_through_a_barrel_ufo_shape(tmp_path):
+    _mk(tmp_path, "src/utils.ts",
+        "export function hasProtocol(x: string) {}\n"
+        "export function parsePath(x: string) {}\n"
+        "export const isRelative = (x: string) => true\n")
+    _mk(tmp_path, "src/index.ts", "export * from './utils'\n")
+    _mk(tmp_path, "test/utilities.test.ts",
+        "import { hasProtocol, parsePath } from '../src'\n"
+        "test('x', () => {})\n")
+    _mk(tmp_path, "test/other.test.ts",
+        "import { somethingElse } from '../src'\n")
+    got = V.default_tests_for(str(tmp_path), "src/utils.ts")
+    assert got == os.path.join("test", "utilities.test.ts")
+
+
+def test_path_matching_defu_shape(tmp_path):
+    _mk(tmp_path, "src/defu.ts", "export function defu() {}\n")
+    _mk(tmp_path, "test/merge.test.ts",
+        "import { defu } from '../src/defu'\n")
+    got = V.default_tests_for(str(tmp_path), "src/defu.ts")
+    assert got == os.path.join("test", "merge.test.ts")
+
+
+def test_single_name_overlap_is_too_weak_to_guess(tmp_path):
+    _mk(tmp_path, "src/utils.ts", "export function alpha() {}\n")
+    _mk(tmp_path, "test/a.test.ts", "import { alpha } from '../src'\n")
+    _mk(tmp_path, "test/b.test.ts", "import { alpha } from '../src'\n")
+    assert V.default_tests_for(str(tmp_path), "src/utils.ts") \
+        .endswith("utils.test.ts")  # falls through to the best-guess ask
+
+
+def test_colocated_still_wins_before_import_matching(tmp_path):
+    _mk(tmp_path, "src/thing.ts", "export const a = 1\n")
+    _mk(tmp_path, "src/thing.test.ts", "import { a } from './thing'\n")
+    _mk(tmp_path, "test/thing.test.ts", "import { a } from '../src/thing'\n")
+    assert V.default_tests_for(str(tmp_path), "src/thing.ts") \
+        == os.path.join("src", "thing.test.ts")
+
+
+def test_spec_suffix_colocated_and_dir(tmp_path):
+    # gauntlet catch 3: pathe's entire suite is *.spec.ts
+    _mk(tmp_path, "src/a.ts", "export const a = 1\n")
+    _mk(tmp_path, "src/a.spec.ts", "import { a } from './a'\n")
+    assert V.default_tests_for(str(tmp_path), "src/a.ts") \
+        == os.path.join("src", "a.spec.ts")
+    _mk(tmp_path, "src/b.ts", "export const b = 1\n")
+    _mk(tmp_path, "test/b.spec.ts", "import { b } from '../src/b'\n")
+    assert V.default_tests_for(str(tmp_path), "src/b.ts") \
+        == os.path.join("test", "b.spec.ts")
+
+
+def test_smoke_uses_a_real_probe_file_not_filter_tricks():
+    # gauntlet catch 5: vitest 4 exits 1 when a -t filter skips everything,
+    # --passWithNoTests notwithstanding; the probe is now a real test file
+    from agentboard.verifiers.vitest_verifier import (_PROBE_REL,
+                                                      RepoProfile)
+    for prof in (RepoProfile.pnpm_vitest("x"), RepoProfile.npm_vitest("x")):
+        assert prof.smoke_cmd[-1] == _PROBE_REL
+        assert "-t" not in prof.smoke_cmd
+        assert prof.smoke_probe is not None
+        assert prof.smoke_probe[0] == _PROBE_REL
+        assert "___agentboard_env_probe___" in prof.smoke_probe[1]
+
+
+def test_probe_placement_follows_the_tests_file():
+    # catch 5b: a root probe is disowned by monorepo project includes;
+    # the probe lives beside the tests file, wearing the suite's flavor
+    from agentboard.verifiers.vitest_verifier import smoke_probe_for
+    rel, content = smoke_probe_for("packages/x/tests/y.test.ts")
+    assert rel == "packages/x/tests/__agentboard_env_probe__.test.ts"
+    rel2, _ = smoke_probe_for("test/index.spec.ts")
+    assert rel2 == "test/__agentboard_env_probe__.spec.ts"
+    rel3, _ = smoke_probe_for("demo.test.js")
+    assert rel3 == "__agentboard_env_probe__.test.js"
+    assert "___agentboard_env_probe___" in content

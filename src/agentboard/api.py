@@ -27,7 +27,9 @@ from dataclasses import dataclass, field, fields
 
 from .agents.critic_agent import CriticAgent
 from .agents.gap_auditor import GapAuditor
-from .agents.reviewer_agent import ReviewerAgent
+from .verifiers.assertion_lint import lint_test
+from .agents.test_repairer import MAX_REPAIRS, TestRepairer
+from .agents.reviewer_agent import ReviewerAgent, import_surface
 from .config import (
     ConfigError,
     build_profile,
@@ -41,7 +43,7 @@ from .config import (
 from .fingerprint import verdict_summary
 from .proposal_cache import propose_or_cached
 from .providers import endpoint_label
-from .review import ReviewRun, flag_systematic_artifacts, render_review_html
+from .review import ReviewFinding, ReviewRun, flag_systematic_artifacts, render_review_html
 from .verifiers.finding_verifier import FindingVerifier
 from .verifiers.harness import harness_for_profile, harness_for_target
 
@@ -64,6 +66,7 @@ class ReviewRequest:
     no_critic: bool = False
     audit_model: str = ""
     no_audit: bool = False
+    no_repair: bool = False
     fresh: bool = False
     timeout: int = 1800
     also: list[str] = field(default_factory=list)
@@ -82,7 +85,14 @@ class ReviewRequest:
         """Build from a parsed argparse namespace. Attribute access is
         deliberate: a ReviewRequest field with no matching CLI flag fails
         loudly here instead of silently defaulting."""
-        return cls(**{f.name: getattr(ns, f.name) for f in fields(cls)})
+        # only pass attributes the namespace actually has; anything absent
+        # falls to the dataclass default. A new request field without a
+        # matching CLI flag crashed the real CLI while every direct-
+        # construction test stayed green — the Action caught it on its own
+        # PR (the gate gating its own growth), and this makes the class
+        # of bug structurally impossible.
+        return cls(**{f.name: getattr(ns, f.name)
+                      for f in fields(cls) if hasattr(ns, f.name)})
 
 
 @dataclass
@@ -127,7 +137,13 @@ def run_review(request: ReviewRequest, log=print) -> ReviewResult:
     # friendly, specific guidance for the most common first-run stumble:
     # we couldn't find the tests file and the user didn't say where it is.
     if not req.tests and not os.path.isfile(os.path.join(repo, tests)):
-        diff_tests = _tests_from_diff(repo, base, head)
+        # catch 4b: in worktree mode the change IS the working tree, so the
+        # fallback must diff the worktree (head=""), not base...branch —
+        # head was reconstructed above and is never empty here, which is
+        # how the function-level fix sat correct and unreachable while
+        # zod's run still died (tested the organ, not the body)
+        diff_tests = _tests_from_diff(repo, base,
+                                      "" if req.worktree else head)
         if len(diff_tests) == 1:
             tests = diff_tests[0]
             log(f"tests: {tests} (the change's own diff names it)")
@@ -303,10 +319,50 @@ def run_review(request: ReviewRequest, log=print) -> ReviewResult:
             unreviewed.append(tgt)
             continue
         sub = ReviewRun(intent=intent, target=tgt, findings=findings)
-        FindingVerifier(repo, profile, tests_file=tst_path,
-                        timeout=req.timeout,
-                        project_dir=project_dir, log=log,
-                        harness=harness_for_profile(profile)).run(sub)
+        verifier = FindingVerifier(repo, profile, tests_file=tst_path,
+                                   timeout=req.timeout,
+                                   project_dir=project_dir, log=log,
+                                   harness=harness_for_profile(profile))
+        verifier.run(sub)
+        if not req.no_repair:
+            # ONE bounded repair round: a broken proposal is the
+            # proposer's failure and a lost attempt — feed it the exact
+            # error and the target's real import surface, once. Repaired
+            # code re-enters the SAME verifier and earns its status by
+            # execution; a proposal that breaks twice stays broken.
+            broken = [f for f in sub.findings
+                      if f.status == "broken_test" and f.test_code]
+            if broken:
+                surface = import_surface(repo, tgt)
+                repairer = TestRepairer(model=cfg.reviewer_model, log=log)
+                repairer.base_url = provider_base
+                to_rerun: list[ReviewFinding] = []
+                for f in broken[:MAX_REPAIRS]:
+                    code = repairer.repair(f, surface)
+                    if code:
+                        f.test_code = code
+                        f.status = "pending"
+                        f.repaired = True
+                        to_rerun.append(f)
+                if to_rerun:
+                    log(f"  repairing {len(to_rerun)}/{len(broken)} broken "
+                        "proposal(s) (one round; statuses re-earned by "
+                        "execution)")
+                    verifier.run(ReviewRun(intent=intent, target=tgt,
+                                           findings=to_rerun))
+                    fixed = sum(1 for f in to_rerun
+                                if f.status != "broken_test")
+                    log(f"  [repair] {fixed}/{len(to_rerun)} repaired "
+                        "proposal(s) now reach a verdict")
+        for f in sub.findings:
+            # deterministic brittleness lint: free, always on, advisory
+            if f.status == "confirmed_gap" and f.test_code:
+                lint = lint_test(f.test_code)
+                if lint:
+                    f.lint_note = "; ".join(lint)
+                    more = f" (+{len(lint) - 1} more)" if len(lint) > 1 else ""
+                    log(f"  [lint] brittle assertion in "
+                        f"'{f.behavior[:48]}': {lint[0]}{more}")
         if auditor is not None:
             gap_count = sum(1 for f in sub.findings if f.status == "confirmed_gap")
             if gap_count:
@@ -424,17 +480,23 @@ def _tests_from_diff(repo: str, base: str, head: str) -> list[str]:
     autodetect finds nothing, the change's own diff is the next-best
     deterministic signal: a fix that came with a test names its tests file
     for us, and that file is exactly where proposals belong."""
-    r = subprocess.run(
-        ["git", "-C", repo, "diff", "--name-only", f"{base}...{head}"],
-        capture_output=True, text=True,
-    )
+    # worktree mode passes head="" (the state on disk IS the head); a
+    # triple-dot against an empty ref silently diffs nothing, which is how
+    # the gauntlet's zod run lost a test file its own diff had named
+    if head:
+        args = ["git", "-C", repo, "diff", "--name-only", f"{base}...{head}"]
+    else:
+        args = ["git", "-C", repo, "diff", "--name-only", base]
+    r = subprocess.run(args, capture_output=True, text=True)
     out: list[str] = []
     for line in r.stdout.splitlines():
         f = line.strip()
         if not f:
             continue
         b = os.path.basename(f)
-        if (".test." in b or ".spec." in b) and os.path.isfile(os.path.join(repo, f)):
+        is_testy = (".test." in b or ".spec." in b
+                    or b.startswith("test_") or b.endswith("_test.py"))
+        if is_testy and os.path.isfile(os.path.join(repo, f)):
             out.append(f)
     return out
 

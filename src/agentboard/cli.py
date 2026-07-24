@@ -1,6 +1,7 @@
 """agentboard CLI.
 
-`agentboard demo` is the zero-key proof: a bundled buggy target, four
+`agentboard demo` is the zero-key proof, told as the loop prove exists
+for: an agent writes a change, prove tries to break it. A bundled target, four
 pre-proposed tests, and the deterministic gate — no API key, no config, no
 repo of yours at risk. The LLM's job (proposing) is pre-done; what you watch
 is the part that makes agentboard trustworthy: the gate deciding.
@@ -32,6 +33,7 @@ from .api import (  # noqa: F401 - re-exports are part of this module's surface
 )
 from .demo import TARGET_DIR
 from .fingerprint import verdict_summary
+from .verifiers.vitest_verifier import _PROBE_CONTENT, _PROBE_REL
 from .review import ReviewFinding, ReviewRun, render_review_html
 from .verifiers.finding_verifier import FindingVerifier
 from .verifiers.vitest_verifier import RepoProfile
@@ -100,8 +102,8 @@ def _demo_profile() -> RepoProfile:
         test_base=["npx", "vitest", "run"],
         build_cmd=None,
         env={"CI": "true"},
-        smoke_cmd=["npx", "vitest", "run", "--passWithNoTests",
-                   "-t", "___agentboard_env_probe___"],
+        smoke_cmd=["npx", "vitest", "run", _PROBE_REL],
+        smoke_probe=(_PROBE_REL, _PROBE_CONTENT),
     )
 
 
@@ -121,9 +123,12 @@ def demo(fixed: bool = False) -> int:
         with open(tool, "w", encoding="utf-8") as fh:
             fh.write(src.replace(_BUG, _FIX, 1))
 
-    print("agentboard demo — the deterministic gate, no API key required.")
-    print(f"target: a tiny order tool ({'bug FIXED' if fixed else 'one planted bug'})")
-    print("four pre-proposed tests -> one gate run -> four honest verdicts\n")
+    print("agentboard demo — no API key required.")
+    print("the story: an AI agent just wrote a change to order_tool.js"
+          + (" and\nthen FIXED the bug prove caught" if fixed else
+             ", and\nthe change contains a subtle bug, as shipped code "
+             "sometimes does"))
+    print("prove's job: try to BREAK the change before it merges.\n")
 
     t0 = time.time()
     print("[1/2] preparing sandbox (npm install, ~10s first run)...")
@@ -131,13 +136,17 @@ def demo(fixed: bool = False) -> int:
     verifier = FindingVerifier(
         target, _demo_profile(), tests_file="demo.test.js", timeout=300
     )
-    print("[2/2] running the gate (one batched vitest invocation)...\n")
+    print("[2/2] prove attacks the change (4 proposed behaviors, "
+          "every verdict decided\n      by execution — no model in the "
+          "pass/fail path)...\n")
     verifier.run(run)
 
     for f in run.findings:
         print(f"  {_BADGE.get(f.status, f.status):<14} {f.behavior}")
         if f.status != "handled" and f.observed:
             print(f"                -> {f.observed[:100]}")
+    from .prove import verdict_block
+    print(f"\n{verdict_block(run)}")
     print(f"\n{verdict_summary(run)}")
     print(f"gate time: {time.time() - t0:.1f}s")
 
@@ -148,17 +157,21 @@ def demo(fixed: bool = False) -> int:
 
     if not fixed and run.gaps:
         print(
-            "\nThe gap is real: `clampPageSize` treats the upper bound as "
-            "exclusive,\nso a request for exactly the maximum comes back one "
-            "short — the kind of\nbug an LLM judge reads right past. The gate "
-            "ran the test; the test failed.\n"
-            "\nNow watch it flip:   agentboard demo --fixed"
+            "\nThe failing test above IS the deliverable: `clampPageSize` "
+            "treats the upper\nbound as exclusive, so a request for exactly "
+            "the maximum comes back one\nshort — the kind of bug an LLM "
+            "judge reads right past. prove ran the test;\nthe test failed; "
+            "that is the whole verdict.\n"
+            "\nThe agent's next move is yours too: fix the bug, prove it —"
+            "\n    agentboard demo --fixed"
         )
     elif fixed and not run.gaps:
         print(
-            "\nSame gate, same tests, one-line fix: the gap is gone. "
-            "Red -> green,\ndecided by execution — no model in the verdict "
-            "path, ever."
+            "\nSame attempts, one-line fix: HELD. Note the wording — "
+            "executed attempts,\nnone broke it. Absence of a counterexample, "
+            "never a proof of correctness.\nThat honesty is the product.\n"
+            "\nOn your own repo (bring a key, or point OPENAI_BASE_URL at "
+            "Ollama):\n    agentboard prove"
         )
     shutil.rmtree(work, ignore_errors=True)
     return 0
@@ -258,8 +271,11 @@ def prove(args) -> int:
 
     plan = plan_prove(repo, args.intent)
     if not plan.targets:
-        print(f"prove compared {plan.diffed}: no reviewable source files "
-              f"changed (tests and deletions don't count). Nothing to do.")
+        # verdict-class token FIRST, same wording as the MCP tool: an agent
+        # grepping ^NOTHING must find it on every surface (the one
+        # deliberate divergence between verbs is exit codes, never wording)
+        print(f"NOTHING TO PROVE: compared {plan.diffed}; no reviewable "
+              "source files changed (tests and deletions do not count)")
         return 0
     if not plan.intent:
         print("prove needs one thing it couldn't derive: what is this "
@@ -345,6 +361,8 @@ def main(argv: list[str] | None = None) -> int:
                         "don't correlate. Default: the critic model.")
     r.add_argument("--no-audit", action="store_true",
                    help="skip the advisory gap auditor")
+    r.add_argument("--no-repair", action="store_true",
+                   help="skip the one bounded repair round for broken proposals")
     r.add_argument("--fresh", action="store_true", help="resample proposals (ignore cache)")
     r.add_argument("--timeout", type=int, default=1800, help="per-gate timeout seconds")
     r.add_argument("--also", action="append", default=[],

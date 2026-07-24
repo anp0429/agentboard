@@ -151,3 +151,25 @@ def test_forecast_line_announces_the_plan_for_multi_file_runs(wired):
     wired.proposals["b.py"] = [_f("b ok")]
     api.run_review(wired.request(), log=_log_to(lines))
     assert any(line.startswith("plan: 2 files to review") for line in lines)
+
+
+def test_worktree_diff_named_tests_rescue_failed_resolution(wired, monkeypatch):
+    """Catch 4b: the diff-tests fallback must be reachable in WORKTREE
+    mode. Resolution fails, the dirty tree's own diff names exactly one
+    test file, and the run proceeds with it instead of stopping."""
+    monkeypatch.setattr(api, "_default_tests_for",
+                        lambda *a, **k: "tests/nope.py")
+    # DIRTY the tree: worktree mode diffs the working tree, and a clean
+    # tree names nothing (the first version of this test forgot that,
+    # which is the fixture-vs-world gap in miniature)
+    with open(os.path.join(wired.repo, "a.py"), "a") as fh:
+        fh.write("Y = 2\n")
+    with open(os.path.join(wired.repo, "tests", "test_a.py"), "a") as fh:
+        fh.write("assert a\n")
+    wired.proposals["a.py"] = [_f("a works")]
+    wired.proposals["b.py"] = [_f("b works")]
+    lines: list[str] = []
+    req = wired.request(tests="", worktree=True)
+    result = api.run_review(req, log=_log_to(lines))
+    assert result.exit_code == 0
+    assert any("the change's own diff names it" in ln for ln in lines)

@@ -254,33 +254,54 @@ class VitestHarness(Harness):
             "--reporter=json", f"--outputFile={out}",
         ]
 
+    _EXC_HEAD = re.compile(
+        r"^([A-Za-z_$][\w$.]*(?:Error|Exception))"
+        r"(?:\s*\[[^\]]+\])?"
+        r"(?::|$)")
+
     def classify_failure(self, fm: str) -> tuple[str, str]:
-        """One failed assertionResult -> (kind, first_line). The single
+        """One failure message -> (kind, first_line). This is the gate's
         shared brain for serial and batched paths — they must never diverge.
 
-        Only a named AssertionError counts as an assertion failure. The old
-        heuristic also accepted any message containing "expected" — and
-        "Unexpected token", a parse error, contains that substring, so a
-        garbage test could mint a confirmed_gap. A runtime crash that is
-        really the tool's fault still surfaces (as broken_test, where a human
-        reads it); the gate stays conservative because an inflated gap is the
-        one error class this design must never produce. vitest's assertion
+        Classification is by the exception actually RAISED, read from its
+        raising position: in a JS report the thrown error heads the message
+        and stack frames descend, so the first line matching a named error
+        (SomeError:, AssertionError [ERR_ASSERTION]:) is the verdict. A
+        substring match over the whole report was the pytest classifier's
+        false-positive generator, and the same latent twin sat here — a
+        crash merely QUOTING "AssertionError" (a codeframe line, a
+        .toThrow(AssertionError) expectation) could mint a confirmed gap.
+        Ordering, twice proven by the gate on itself: an identified
+        AssertionError wins outright, because its human message may
+        legitimately mention timeouts; timeout wording is consulted on the
+        raising line, or over the report only when NO error was named
+        (runner-generated reports have no traceback). vitest's assertion
         layer (@vitest/expect, chai, node:assert) names AssertionError in
         every genuine expect/assert failure."""
         first = fm.strip().splitlines()[0][:200] if fm.strip() else ""
-        if "timed out" in fm.lower():
-            return "timeout", first
         # vitest 3 serializes its per-test timeout through a stack-donor
-        # placeholder: the reported failureMessage is the placeholder's stack,
-        # headed "Error: STACK_TRACE_ERROR", and the human timeout message
-        # does not survive into the JSON reporter. The placeholder header IS
-        # the timeout signal. A user test could only fake it by throwing that
-        # exact message, and the misfile would land in timed_out (ambiguity,
-        # a human's job) — the conservative direction, never a minted gap.
+        # placeholder: the reported failureMessage is the placeholder's
+        # stack, headed "Error: STACK_TRACE_ERROR", and the human timeout
+        # message does not survive into the JSON reporter. The placeholder
+        # header IS the timeout signal; it must HEAD the message.
         if first == "Error: STACK_TRACE_ERROR":
             return "timeout", "test timed out (vitest 3 placeholder serialization)"
-        if "AssertionError" in fm:
+        exc = ""
+        exc_line = ""
+        for line in fm.splitlines():
+            st = line.strip()
+            m = self._EXC_HEAD.match(st)
+            if m:
+                exc, exc_line = m.group(1), st
+                break
+        if exc.endswith("AssertionError"):
             return "assertion", first
+        if exc.endswith("TimeoutError"):
+            return "timeout", first
+        if exc and "timed out" in exc_line.lower():
+            return "timeout", first
+        if not exc and "timed out" in fm.lower():
+            return "timeout", first
         return "load_error", first
 
     def read_verdict(self, out: str) -> tuple[Status, str]:
@@ -355,10 +376,14 @@ class VitestHarness(Harness):
             stem = target[: -len(suffix)]
             base = os.path.basename(stem)
 
-            # 1. co-located: src/foo.ts -> src/foo.test.ts
-            colocated = f"{stem}.test{suffix}"
-            if os.path.isfile(os.path.join(repo, colocated)):
-                return colocated
+            # 1. co-located: src/foo.ts -> src/foo.test.ts (or .spec —
+            # pathe's whole suite is *.spec.ts; the old YAML picker knew
+            # the suffix and the library port forgot it, gauntlet catch 3)
+            for kind in (".test", ".spec"):
+                cand = f"{stem}{kind}{suffix}"
+                if os.path.isfile(os.path.join(repo, cand)):
+                    return cand
+            colocated = f"{stem}.test{suffix}"  # the best-GUESS for errors
 
             # 2 & 3. search test dirs for <base>.test.<ext>, then singular/plural
             variants = [base]
@@ -369,12 +394,15 @@ class VitestHarness(Harness):
             target_dir = os.path.dirname(os.path.join(repo, target))
             for name in variants:
                 hits: list[str] = []
-                for pat in (
-                    f"**/tests/**/{name}.test{suffix}",
-                    f"**/__tests__/**/{name}.test{suffix}",
-                    f"**/test/**/{name}.test{suffix}",
-                    f"**/{name}.test{suffix}",
-                ):
+                pats = []
+                for kind in (".test", ".spec"):
+                    pats += [
+                        f"**/tests/**/{name}{kind}{suffix}",
+                        f"**/__tests__/**/{name}{kind}{suffix}",
+                        f"**/test/**/{name}{kind}{suffix}",
+                        f"**/{name}{kind}{suffix}",
+                    ]
+                for pat in pats:
                     hits += _glob.glob(os.path.join(repo, pat), recursive=True)
                 hits = sorted({h for h in hits if "node_modules" not in h})
                 if len(hits) == 1:
@@ -388,6 +416,84 @@ class VitestHarness(Harness):
                     # only accept if it's meaningfully close (shares more than repo root)
                     if _shared(best) > len(repo):
                         return os.path.relpath(best, repo)
+
+            # 3.5 IMPORT MATCHING (the gauntlet's first stranger-repo lesson,
+            # unjs/ufo run 1): basename conventions cannot survive human
+            # naming — src/utils.ts is tested by test/utilities.test.ts.
+            # The pytest lane already learned this and matches by import;
+            # this is the TS spelling. PATH match first (a test importing
+            # ".../<base>" names its target outright, unjs/defu style);
+            # then NAME match (a test importing the target's exported
+            # identifiers through a barrel, unjs/ufo style). Deterministic
+            # regexes over real files — no model anywhere near resolution.
+            candidates: list[str] = []
+            cand_pats = []
+            for kind in (".test", ".spec"):
+                cand_pats += [f"**/tests/**/*{kind}{suffix}",
+                              f"**/test/**/*{kind}{suffix}",
+                              f"**/__tests__/**/*{kind}{suffix}",
+                              f"**/*{kind}{suffix}"]
+            for pat in cand_pats:
+                candidates += _glob.glob(os.path.join(repo, pat),
+                                         recursive=True)
+            candidates = sorted({c for c in candidates
+                                 if "node_modules" not in c})[:400]
+
+            def _read(p: str) -> str:
+                try:
+                    with open(p, encoding="utf-8", errors="replace") as fh:
+                        return fh.read(65536)
+                except OSError:
+                    return ""
+
+            path_re = re.compile(
+                r"""(?:from\s+|require\(\s*)['"][^'"]*/"""
+                + re.escape(base)
+                + r"""(?:\.[cm]?[jt]sx?)?['"]""")
+            path_hits = [c for c in candidates if path_re.search(_read(c))]
+            if len(path_hits) == 1:
+                return os.path.relpath(path_hits[0], repo)
+            if len(path_hits) > 1:
+                def _shared_p(h: str) -> int:
+                    return len(os.path.commonpath(
+                        [target_dir, os.path.dirname(h)]))
+                best = max(path_hits, key=_shared_p)
+                if _shared_p(best) > len(repo):
+                    return os.path.relpath(best, repo)
+
+            exported = set(re.findall(
+                r"^export\s+(?:async\s+)?(?:function|const|let|var|class|"
+                r"enum)\s+([A-Za-z_$][\w$]*)",
+                _read(os.path.join(repo, target)), re.M))
+            for grp in re.findall(r"^export\s*\{([^}]*)\}",
+                                  _read(os.path.join(repo, target)), re.M):
+                for nm in grp.split(","):
+                    nm = nm.strip().split(" as ")[-1].strip()
+                    if nm:
+                        exported.add(nm)
+            if exported:
+                scored: list[tuple[int, str]] = []
+                for c in candidates:
+                    imported: set[str] = set()
+                    for grp in re.findall(r"import\s*\{([^}]*)\}",
+                                          _read(c)):
+                        for nm in grp.split(","):
+                            nm = nm.strip().split(" as ")[0].strip()
+                            if nm:
+                                imported.add(nm)
+                    overlap = len(exported & imported)
+                    if overlap:
+                        scored.append((overlap, c))
+                if scored:
+                    scored.sort(key=lambda t: (-t[0], t[1]))
+                    top, runner_up = scored[0], (scored[1]
+                                                 if len(scored) > 1 else None)
+                    # accept only a CLEAR winner: at least two of the
+                    # target's names, and strictly more than second place —
+                    # a tie is ambiguity, and ambiguity means ask, not guess
+                    if top[0] >= 2 and (runner_up is None
+                                        or top[0] > runner_up[0]):
+                        return os.path.relpath(top[1], repo)
 
             # 4. sole test file in the target's own directory. Covers the common
             # one-suite-per-module-directory layout that neither co-location nor

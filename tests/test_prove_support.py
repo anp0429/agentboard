@@ -246,3 +246,34 @@ def test_import_surface_refuses_untrustworthy_truncated_paths(tmp_path):
     (ok / "mod.py").write_text("def fn():\n    pass\n")
     out = import_surface(str(tmp_path), "packages/my-app/src/pkg/mod.py")
     assert "`pkg.mod`" in out  # cut at a src root: self-contained, trusted
+
+
+def test_import_surface_round_six_regressions(tmp_path):
+    """Run c6b038372514ff65's five real gaps, one file: non-identifier
+    stem refused; del-then-rebind keeps the rebind; tuple del removes
+    every contained name; walrus in a def's default binds; a binding
+    inside a module-level except body persists while the handler alias
+    (deleted by Python) stays out."""
+    from agentboard.agents.reviewer_agent import import_surface
+    (tmp_path / "my-module.py").write_text("def fn():\n    pass\n")
+    assert import_surface(str(tmp_path), "my-module.py") == ""
+
+    (tmp_path / "mod.py").write_text(
+        "X = 1\n"
+        "del X\n"
+        "X = 2\n"
+        "A, B, C = 1, 2, 3\n"
+        "del (A, B)\n"
+        "def f(x=(w_default := 1)):\n    pass\n"
+        "try:\n"
+        "    import missing_mod\n"
+        "except ImportError as boom:\n"
+        "    fallback_flag = True\n"
+        "if True:\n"
+        "    FEATURE = 1\n"
+    )
+    out = import_surface(str(tmp_path), "mod.py")
+    for name in ("X", "C", "w_default", "f", "fallback_flag", "FEATURE"):
+        assert name in out
+    for name in ("A", "B", "boom"):
+        assert f" {name}," not in out and f" {name}." not in out

@@ -93,6 +93,25 @@ def _copy_discrepancies(src: str, dst: str, limit: int = 5) -> list[str]:
     return diffs
 
 
+def _strip_pm_noise(tail: str) -> str:
+    """Cause first: npm's warn/notice chatter arrives ahead of the real
+    error and buried it on two gauntlet boards. _proc_tail labels its
+    first line ("stderr: npm warn ..."), so the label must be peeled
+    before filtering — the first version of this filter checked the
+    labeled line and kept everything (the prefix bug the third board
+    exposed). The label is reattached to whatever real cause remains."""
+    label = ""
+    body = tail
+    for lb in ("stderr: ", "stdout: "):
+        if body.startswith(lb):
+            label, body = lb, body[len(lb):]
+            break
+    kept = [ln for ln in body.splitlines()
+            if not ln.strip().lower().startswith(("npm warn", "npm notice"))]
+    cleaned = "\n".join(kept).strip()
+    return (label + cleaned) if cleaned else tail
+
+
 class FindingVerifier:
     def __init__(
         self,
@@ -229,18 +248,27 @@ class FindingVerifier:
         # that actually launches the runner cannot.
         if not self._prep_error and getattr(self.profile, "smoke_cmd", None):
             t0 = time.monotonic()
+            probe = getattr(self.profile, "smoke_probe", None)
+            probe_path = ""
+            if probe:
+                probe_path = os.path.join(self._workdir(repo), probe[0])
+                with open(probe_path, "w", encoding="utf-8") as pf:
+                    pf.write(probe[1])
             try:
                 smoke = self._run(self.profile.smoke_cmd, self._workdir(repo))
                 phases.append(f"smoke {time.monotonic() - t0:.1f}s")
                 if smoke.returncode != 0:
                     self._prep_error = (
                         "environment smoke probe failed: "
-                        f"{_proc_tail(smoke)}"
+                        + _strip_pm_noise(_proc_tail(smoke))
                     )
             except subprocess.TimeoutExpired:
                 self._prep_error = (
                     f"environment smoke probe did not finish within {self.timeout}s"
                 )
+            finally:
+                if probe_path and os.path.exists(probe_path):
+                    os.remove(probe_path)
         self.log("  warm base: " + ", ".join(phases))
         self._warm_repo = repo
 

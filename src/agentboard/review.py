@@ -37,6 +37,14 @@ class ReviewFinding:
     # shared verbatim by several other gaps in the same run (see
     # flag_systematic_artifacts). Advisory — NEVER changes status.
     artifact_note: str = ""
+    # deterministic brittleness lint (assertion_lint) — flags gap-deciding
+    # assertions with shapes that historically produced false positives
+    # (short-needle substrings, format opinions). Advisory — NEVER changes
+    # status.
+    lint_note: str = ""
+    # set when a broken proposal was repaired (one bounded round) and
+    # re-executed; its status is whatever the SECOND run earned
+    repaired: bool = False
     # fix stage (TransitionVerifier is the judge — red->green->no-regression)
     fix_status: str = ""               # "" | "fix_verified" | "fix_rejected" | "fix_not_attempted"
     fix_note: str = ""                 # verifier's reason (or agent's failure to propose)

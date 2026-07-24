@@ -93,7 +93,7 @@ def test_llm_configured_requires_key_or_base_url():
 
 def test_broken_headline_counts_gaps_and_executed_attempts():
     line = verdict_block(_run(confirmed_gap=2, handled=7, broken_test=3))
-    assert line.startswith("BROKEN: 2 failing tests, 9 attempts executed")
+    assert line.startswith("BROKEN: 2 confirmed gaps, 9 attempts executed")
     assert "3 proposals broke before running" in line
 
 
@@ -176,3 +176,75 @@ def test_verdict_from_counts_tolerates_missing_and_unknown_keys():
     assert verdict_from_counts({}).startswith("STOPPED: nothing was proposed")
     line = verdict_from_counts({"handled": 1, "mystery_status": 9})
     assert line.startswith("HELD: 1 executed attempts")
+
+
+def test_declaration_files_are_never_targets(tmp_path):
+    # gauntlet catch 2: lib/defu.d.cts became a target and dead-ended the
+    # run; type declarations have no runtime behavior to break
+    import subprocess
+
+    from agentboard.config import targets_from_diff
+    r = str(tmp_path)
+    for cmd in (["init", "-q", "-b", "main"],
+                ["config", "user.email", "t@t"],
+                ["config", "user.name", "t"]):
+        subprocess.run(["git", "-C", r, *cmd], check=True,
+                       capture_output=True)
+    (tmp_path / "lib").mkdir()
+    (tmp_path / "lib" / "x.d.cts").write_text("export type X = 1\n")
+    (tmp_path / "lib" / "real.ts").write_text("export const y = 1\n")
+    subprocess.run(["git", "-C", r, "add", "-A"], check=True,
+                   capture_output=True)
+    subprocess.run(["git", "-C", r, "commit", "-q", "-m", "i"], check=True,
+                   capture_output=True)
+    (tmp_path / "lib" / "x.d.cts").write_text("export type X = 2\n")
+    (tmp_path / "lib" / "real.ts").write_text("export const y = 2\n")
+    out = targets_from_diff(r, "HEAD", worktree=True)
+    assert out == ["lib/real.ts"]
+
+
+def test_tests_from_diff_is_worktree_aware(tmp_path):
+    # gauntlet catch 4: worktree mode passes head="" and the triple-dot
+    # diffed nothing, losing a test file the change itself had named
+    import subprocess
+
+    from agentboard.api import _tests_from_diff
+    r = str(tmp_path)
+    for cmd in (["init", "-q", "-b", "main"],
+                ["config", "user.email", "t@t"],
+                ["config", "user.name", "t"]):
+        subprocess.run(["git", "-C", r, *cmd], check=True,
+                       capture_output=True)
+    (tmp_path / "a.py").write_text("X = 1\n")
+    (tmp_path / "test_a.py").write_text("import a\n")
+    subprocess.run(["git", "-C", r, "add", "-A"], check=True,
+                   capture_output=True)
+    subprocess.run(["git", "-C", r, "commit", "-q", "-m", "i"], check=True,
+                   capture_output=True)
+    (tmp_path / "a.py").write_text("X = 2\n")
+    (tmp_path / "test_a.py").write_text("import a\nassert a\n")
+    assert _tests_from_diff(r, "HEAD", "") == ["test_a.py"]
+
+
+def test_from_namespace_tolerates_missing_new_fields():
+    # the Action caught this live: a new ReviewRequest field without a CLI
+    # flag crashed from_namespace while direct-construction tests passed
+    import argparse
+
+    from agentboard.api import ReviewRequest
+    ns = argparse.Namespace(repo=".", target="a.py", tests="t.py",
+                            intent="x")
+    req = ReviewRequest.from_namespace(ns)
+    assert req.no_repair is False
+    assert req.no_audit is False
+
+
+def test_review_parser_accepts_no_repair(monkeypatch):
+    import agentboard.cli as cli
+    seen: dict = {}
+    monkeypatch.setattr(cli, "review",
+                        lambda args: seen.update(vars(args)) or 0)
+    rc = cli.main(["review", "--target", "a.py", "--tests", "t.py",
+                   "--intent", "x", "--no-repair"])
+    assert rc == 0
+    assert seen["no_repair"] is True

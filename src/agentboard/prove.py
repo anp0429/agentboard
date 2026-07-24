@@ -133,7 +133,9 @@ def verdict_from_counts(counts: dict, env_error: str = "") -> str:
     if n["skipped_covered"]:
         extras.append(f"{n['skipped_covered']} already covered by existing tests")
     if n["broken_test"]:
-        extras.append(f"{n['broken_test']} proposals broke before running")
+        extras.append(
+            f"{n['broken_test']} proposal"
+            f"{'s' if n['broken_test'] != 1 else ''} broke before running")
     if n["timed_out"]:
         extras.append(f"{n['timed_out']} timed out (inconclusive)")
     tail = f" ({'; '.join(extras)})" if extras else ""
@@ -141,8 +143,8 @@ def verdict_from_counts(counts: dict, env_error: str = "") -> str:
     if env_error:
         return f"STOPPED: {env_error.splitlines()[0]}"
     if gaps:
-        plural = "tests" if gaps != 1 else "test"
-        return (f"BROKEN: {gaps} failing {plural}, "
+        plural = "gaps" if gaps != 1 else "gap"
+        return (f"BROKEN: {gaps} confirmed {plural}, "
                 f"{executed} attempts executed{tail}")
     if executed:
         return (f"HELD: {executed} executed attempts, 0 broke it{tail}\n"
