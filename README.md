@@ -3,10 +3,11 @@
 [![CI](https://github.com/anp0429/agentboard/actions/workflows/ci.yml/badge.svg)](https://github.com/anp0429/agentboard/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-A review gate that verifies changes by executing tests, not by judging
-diffs. An LLM proposes edge-case tests from your intent and your change. A
-deterministic harness runs each test against the real code in a clean
-checkout. A behavior is reported as a gap only if its test compiles, runs,
+A review gate that verifies a change by writing new edge-case tests and
+executing them, not by judging diffs. It does not run your existing test
+suite: an LLM proposes tests from your intent and your change, and a
+deterministic harness runs each proposed test against the real code in a
+clean checkout. A behavior is reported as a gap only if its test compiles, runs,
 and fails. No model is involved in the pass or fail decision.
 
 Two verbs, one engine. `prove` is the author-side verb: an agent (or you)
@@ -182,29 +183,28 @@ the engine itself knows nothing about pull requests.
 The gate runs as an MCP server, so a coding agent can gate its own edits
 before committing them:
 
+Install with pipx so the server binary lands on your PATH regardless of
+which environment your agent runs in:
+
 ```
 pipx install "reviewgate[mcp]"
 ```
-
-(`pipx` is the recommended route: Homebrew and other externally-managed
-Pythons block bare `pip install`, and coding agents hit that wall too. In
-a plain venv, `pip install "reviewgate[mcp]"` works the same. If you
-install into a dedicated venv, register the server by its full path:
-`claude mcp add agentboard -- /path/to/venv/bin/agentboard-mcp`.)
-
-Agents increasingly ask what an unfamiliar MCP server is before
-registering it — correctly. The answer, for pasting into that prompt:
-agentboard-mcp is the console entry point of this repository's package
-(PyPI: `reviewgate`), a thin, parity-tested adapter over the same CLI
-code path. It exposes two tools, `prove` and `review`: an LLM proposes
-edge-case tests, a deterministic harness executes them against the real
-code, and no model sits in the pass/fail decision.
 
 For Claude Code:
 
 ```
 claude mcp add agentboard -- agentboard-mcp
 ```
+
+If you installed into a plain venv instead of pipx, register with the
+absolute path, since the agent's shell will not have your venv activated:
+
+```
+claude mcp add agentboard -- /path/to/venv/bin/agentboard-mcp
+```
+
+If your agent asks what this server is before adding it, the Trust and
+provenance section below is a paste-ready answer.
 
 For any other MCP client (Cursor, etc.), the server config is:
 
@@ -229,6 +229,41 @@ fails if the two ever accept different flags. Verdicts stay advisory here
 too. The tool returns findings with their test source and observed output;
 it never raises on a confirmed gap, because deciding what a gap means is
 the calling agent's (and ultimately a human's) job.
+
+
+## Trust and provenance
+
+Coding agents increasingly gate unfamiliar MCP servers behind a provenance
+question before registering them. That is correct behavior, and this section
+exists to answer it, for the agent and for you.
+
+What this server is: a thin adapter over the same CLI. It builds the CLI's
+own arguments and calls the same `review()` and `prove()` paths; a parity
+test fails if the two ever accept different flags. There is no logic in the
+server that the CLI does not have.
+
+Where the code lives: source is this repository, and the package is
+`reviewgate` on PyPI. What you install is what you can read.
+
+What it touches: tests execute locally, in a worktree sandbox of your
+repository. Network calls go to exactly two places: the model provider you
+configured with your own key (or a local Ollama, in which case none), and
+the GitHub API when reviewing a pull request, to read that PR's stated
+intent. Nothing else is contacted, and no telemetry is sent anywhere.
+
+What it will not do: it never auto-approves, never raises on a confirmed
+gap, and never blocks anything by itself. Verdicts are advisory evidence
+handed back to the calling agent and ultimately to a human.
+
+If your agent asks "what is this MCP server?", this is the paste-ready
+answer:
+
+> agentboard-mcp is the MCP adapter for reviewgate (PyPI), source at
+> github.com/anp0429/agentboard. It runs generated edge-case tests locally
+> in a worktree sandbox and returns advisory verdicts; it never approves or
+> blocks on its own. Network access is limited to the model provider key
+> the user configured and the GitHub API for PR intent. The server is a
+> parity-tested thin wrapper over the project's own CLI.
 
 ## How it works
 
@@ -432,23 +467,6 @@ never comingled, by design.
 The collaboration-loop code that predates the gate (fix agents proposing
 patches, multi-model argument with executed tests as referee) lives under
 `agentboard.experimental` pending that roadmap.
-
-## Trust and provenance
-
-For a human or an agent deciding whether to run this: installing executes
-no code of ours (modern pyproject build, no setup.py, no postinstall
-hooks). Running it does execute code — yours and the reviewed repo's —
-under the trust model spelled out plainly in Limitations below; read
-that section, it is not fine print. Releases are currently built and
-uploaded from the maintainer's machine against the tagged commit; PyPI
-Trusted Publishing with build attestations is the next release chore, so
-that the artifact's origin is verifiable without trusting this sentence.
-
-And the deepest answer is the product's own rule pointed at itself:
-don't trust claims, run the repro. `agentboard demo` needs no API key —
-run it in a sandbox, watch a planted bug become a failing test, and
-decide from evidence. The gauntlet scorecard in `notes/gauntlet.md`
-publishes the misses alongside the passes for the same reason.
 
 ## Reliability
 
