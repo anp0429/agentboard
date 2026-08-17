@@ -101,6 +101,10 @@ _BASE_ENV_ALLOWLIST = {
     "PIP_NO_INDEX",
     "PIP_FIND_LINKS",
     "UV_CACHE_DIR",
+    # scm fix: without this, filtered_environment strips the pretend
+    # version scrubbed_env just set, and VCS-versioned installs fail in
+    # the sandbox anyway. Not a secret shape; safe to pass.
+    "SETUPTOOLS_SCM_PRETEND_VERSION",
 }
 
 

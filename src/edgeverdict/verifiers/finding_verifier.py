@@ -37,6 +37,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 
 from ..execution import backend_from_env
@@ -138,7 +139,8 @@ def _strip_pm_noise(tail: str) -> str:
             label, body = lb, body[len(lb):]
             break
     kept = [ln for ln in body.splitlines()
-            if not ln.strip().lower().startswith(("npm warn", "npm notice"))]
+            if not ln.strip().lower().startswith(("npm warn", "npm notice"))
+            and not any(n in ln for n in _INIT_NOISE)]
     cleaned = "\n".join(kept).strip()
     return (label + cleaned) if cleaned else tail
 
@@ -234,6 +236,47 @@ def _invalidate_cache_entry(fp: str) -> None:
     shutil.rmtree(os.path.join(_warm_cache_root(), fp), ignore_errors=True)
 
 
+# -- v11 workspace relink (sig EDGEVERDICT_WORKSPACE_RELINK_V1) --------------
+# The warm cache persists the ROOT node_modules only. In a workspace repo
+# (pnpm-workspace.yaml / package.json "workspaces") the package manager also
+# materializes PER-PACKAGE node_modules (bin shims, workspace symlinks); a
+# restore without them hands the runner a tree it cannot resolve — the v8
+# proof-run gap. The fix is not to cache every nested tree (fragile, huge):
+# re-run the install with --offline after restore. The store/caches rode
+# along with the restore, so the relink materializes per-package trees with
+# ZERO network, in seconds. If the offline relink fails, the entry is not
+# trustworthy: invalidate + fall through to a fresh install (which re-caches).
+
+def _is_workspace_repo(repo_root: str) -> bool:
+    """True when the repo declares a package-manager workspace: a
+    pnpm-workspace.yaml at the root, or a root package.json carrying a
+    "workspaces" field. Fail-safe: unreadable/absent manifests -> False
+    (plain repos never pay the relink)."""
+    if os.path.isfile(os.path.join(repo_root, "pnpm-workspace.yaml")):
+        return True
+    pj = os.path.join(repo_root, "package.json")
+    if os.path.isfile(pj):
+        try:
+            with open(pj, encoding="utf-8") as fh:
+                return '"workspaces"' in fh.read()
+        except OSError:
+            return False
+    return False
+
+
+def _offline_relink_cmd(install_cmd: list[str]) -> list[str] | None:
+    """The --offline re-run of the profile's install command, used only on
+    a cache-restored workspace tree. None when the command is not an
+    install (nothing to re-run) or already offline (idempotent). The
+    relink must never reach the network: everything it needs rode along
+    in the restored npm-cache/pnpm-store."""
+    if "install" not in install_cmd:
+        return None
+    if "--offline" in install_cmd:
+        return None
+    return [*install_cmd, "--offline"]
+
+
 def _project_smoke_marker(tests_file: str) -> str:
     """Cache-entry filename vouching that THIS test project's runner boots.
     Dependencies are a property of the lockfile; a booting runner is a
@@ -314,6 +357,7 @@ class FindingVerifier:
         # warm-base state (built once, reused per finding)
         self._warm_repo: str | None = None
         self._warm_root: str | None = None
+        self._cache_fp: str | None = None  # v13: warm-cache key for re-stow
         self._pristine_tests: str | None = None
         self._prep_error: str = ""
         # Repository lifecycle commands and generated tests never run
@@ -399,6 +443,7 @@ class FindingVerifier:
         if _warm_cache_enabled() and self.profile.install_cmd:
             fp = _dep_fingerprint(
                 self.repo_root, self.project_dir, self.profile.install_cmd)
+            self._cache_fp = fp  # v13: run() re-stows vite artifacts by key
             if fp:
                 cdir = os.path.join(_warm_cache_root(), fp)
                 cached_nm = os.path.join(cdir, "node_modules")
@@ -438,6 +483,34 @@ class FindingVerifier:
                         shutil.rmtree(dest_nm, ignore_errors=True)
                         cache_hit = False
                         smoke_skip = False
+        # v11 workspace relink: a restored ROOT node_modules is not a whole
+        # workspace — materialize per-package trees offline, or distrust
+        # the entry entirely (sig EDGEVERDICT_WORKSPACE_RELINK_V1).
+        if cache_hit and fp and _is_workspace_repo(self.repo_root):
+            relink = _offline_relink_cmd(self.profile.install_cmd)
+            if relink is not None:
+                t0 = time.monotonic()
+                rl = None
+                try:
+                    rl = self._run(relink, self._workdir(repo))
+                except subprocess.TimeoutExpired:
+                    rl = None
+                if rl is None or rl.returncode != 0:
+                    self.log("  warm base: offline relink failed on a "
+                             "cache-restored workspace; invalidating cache "
+                             "entry " + fp + " and retrying with a fresh "
+                             "install")
+                    _invalidate_cache_entry(fp)
+                    shutil.rmtree(os.path.join(self._workdir(repo),
+                                               "node_modules"),
+                                  ignore_errors=True)
+                    cache_hit = False
+                    smoke_skip = False
+                    phases.append("relink-failed (cache invalidated)")
+                else:
+                    phases.append(
+                        f"relink {time.monotonic() - t0:.1f}s "
+                        "(workspace per-package node_modules, offline)")
         healed = False
         while True:
             if not cache_hit and self.profile.install_cmd:
@@ -609,6 +682,39 @@ class FindingVerifier:
         self.log("  warm base: " + ", ".join(phases))
         self._warm_repo = repo
 
+    # -- v13 vite re-stow (sig EDGEVERDICT_VITE_RESTOW_V1) -------------------
+    def _restow_vite_cache(self) -> None:
+        """Persist the run's vite dep-optimizer artifacts (node_modules/.vite)
+        back into the warm-cache entry. The restore path already carries a
+        .vite dir if the cached tree had one — but the FIRST run per dep
+        state pays the full cold-transform cost (~priced at minutes on
+        studio) and, without this, pays it again every run. Re-stowing after
+        each run makes the transforms a one-time cost per lockfile state,
+        the same deal install and smoke already get. Atomic (tmp +
+        os.replace) so a killed run never leaves a half-written cache, and
+        best-effort: a re-stow failure never affects the finished run."""
+        if not (_warm_cache_enabled() and self._cache_fp and self._warm_repo):
+            return
+        src = os.path.join(self._workdir(self._warm_repo),
+                           "node_modules", ".vite")
+        if not os.path.isdir(src):
+            return
+        cdir = os.path.join(_warm_cache_root(), self._cache_fp)
+        cached_nm = os.path.join(cdir, "node_modules")
+        if not os.path.isdir(cached_nm):
+            return  # entry gone (invalidated mid-run): nothing to enrich
+        try:
+            tmp = cdir + ".tmp-vite"
+            shutil.rmtree(tmp, ignore_errors=True)
+            shutil.copytree(src, tmp, symlinks=True)
+            final = os.path.join(cached_nm, ".vite")
+            shutil.rmtree(final, ignore_errors=True)
+            os.replace(tmp, final)
+            self.log("  warm base: re-stowed vite cache into entry "
+                     + self._cache_fp)
+        except (OSError, shutil.Error):
+            pass  # cache is best-effort; never break the run
+
     def close(self) -> None:
         """Delete backend resources and the warm base."""
         self._execution_backend.close()
@@ -617,10 +723,17 @@ class FindingVerifier:
         self._warm_root = self._warm_repo = self._pristine_tests = None
         self._prep_error = ""
 
-    def classify(self, finding: ReviewFinding) -> ReviewFinding:
+    def classify(self, finding: ReviewFinding,
+                 repo_override: str | None = None) -> ReviewFinding:
         """Inject this finding's test into the warm base's pristine tests file
         and run ONLY it. Reuses the shared dependency tree; resets the tests
-        file to pristine first so no finding sees another's injected test."""
+        file to pristine first so no finding sees another's injected test.
+
+        repo_override (v12, sig EDGEVERDICT_PARALLEL_CONFIRM_V1): run against
+        a PRIVATE copy of the warm repo instead of the shared one — the
+        parallel confirmation lanes each write their own tests file and read
+        their own result file, so concurrent re-gates never collide. The
+        default (None) is the shared warm repo, byte-identical behavior."""
         if finding.covered_by_existing:
             finding.status = "skipped_covered"
             return finding
@@ -651,12 +764,14 @@ class FindingVerifier:
                 test_code = marked
                 # recompute the (now-marked) title for -k selection
                 serial_title = self.harness.test_title(test_code) or title
+        repo = repo_override or self._warm_repo
+        assert repo is not None  # set by _ensure_warm when prep succeeded
         host_path: str | None = None
-        if self._warm_repo and self.tests_file:
-            host_path = os.path.join(self._warm_repo, self.tests_file)
+        if self.tests_file:
+            host_path = os.path.join(repo, self.tests_file)
         target_path: str | None = None
-        if self._warm_repo and getattr(finding, "source_file", None):
-            cand = os.path.join(self._warm_repo, finding.source_file)
+        if getattr(finding, "source_file", None):
+            cand = os.path.join(repo, finding.source_file)
             if os.path.isfile(cand):
                 target_path = cand
         injected, err = self.harness.inject(
@@ -666,8 +781,6 @@ class FindingVerifier:
             finding.status = "broken_test"
             finding.observed = err
             return finding
-        repo = self._warm_repo
-        assert repo is not None  # set by _ensure_warm when prep succeeded
         tpath = os.path.join(repo, self.tests_file)
         try:
             # write pristine + THIS finding's test (clean start every time)
@@ -880,12 +993,31 @@ class FindingVerifier:
         if not idxs:
             return
         t0 = time.monotonic()
+        batch_obs = {i: review.findings[i].observed for i in idxs}
+        # v12 (sig EDGEVERDICT_PARALLEL_CONFIRM_V1): re-gate the gaps in
+        # PARALLEL. Each lane gets a PRIVATE copy of the warm repo — its own
+        # tests file, its own result file — so isolation stays airtight while
+        # the wall-clock cost stops scaling linearly with gap count (the
+        # Aug 10 live run spent 8355s re-gating 12 gaps serially). Workers
+        # come from EDGEVERDICT_CONFIRM_WORKERS (default 4). ANY doubt —
+        # one gap, workers=1, no warm repo, or copies failing — falls back
+        # to the proven sequential path; parallel is an optimization layer,
+        # sequential stays the authority.
+        lanes = 0
+        if (self._confirm_workers() > 1 and len(idxs) > 1
+                and self._warm_repo is not None):
+            try:
+                lanes = self._regate_parallel(review, idxs)
+            except (OSError, shutil.Error):
+                lanes = 0  # lane copies failed -> sequential fallback
+        if not lanes:
+            for i in idxs:
+                self.classify(review.findings[i])
         survived = 0
         artifacts = 0
         for i in idxs:
             f = review.findings[i]
-            batch_observed = f.observed
-            self.classify(f)
+            batch_observed = batch_obs[i]
             if f.status == "confirmed_gap":
                 survived += 1
                 f.observed = (f.observed or batch_observed or "")
@@ -900,7 +1032,70 @@ class FindingVerifier:
         self.log(
             f"  serial confirmation {time.monotonic() - t0:.1f}s: "
             f"{len(idxs)} batch gap(s) re-gated in isolation — "
-            f"{survived} confirmed, {artifacts} batch artifact(s)")
+            f"{survived} confirmed, {artifacts} batch artifact(s)"
+            + (f" [{lanes} parallel lane(s)]" if lanes else ""))
+
+    @staticmethod
+    def _confirm_workers() -> int:
+        """Parallel confirmation lane budget. EDGEVERDICT_CONFIRM_WORKERS,
+        default 4; anything unparsable or < 1 means 1 (sequential)."""
+        raw = os.environ.get("EDGEVERDICT_CONFIRM_WORKERS", "4").strip()
+        try:
+            return max(1, int(raw or "4"))
+        except ValueError:
+            return 1
+
+    def _regate_parallel(self, review: ReviewRun, idxs: list[int]) -> int:
+        """Re-gate the given findings across private warm-repo copies.
+        Returns the lane count used. Raises OSError/shutil.Error ONLY
+        before any classify has run (copy phase), so the caller's
+        sequential fallback never double-gates. A worker exception marks
+        just its finding for a sequential re-gate afterwards."""
+        assert self._warm_repo is not None
+        lanes = min(self._confirm_workers(), len(idxs))
+        lane_roots: list[str] = []
+        lane_repos: list[str] = []
+        try:
+            for _ in range(lanes):
+                root = tempfile.mkdtemp(prefix="edgeverdict_confirm_")
+                lane_roots.append(root)
+                lr = os.path.join(root, "repo")
+                shutil.copytree(self._warm_repo, lr, symlinks=True)
+                lane_repos.append(lr)
+        except (OSError, shutil.Error):
+            for r in lane_roots:
+                shutil.rmtree(r, ignore_errors=True)
+            raise
+        work = list(idxs)
+        failed: list[int] = []
+        lock = threading.Lock()
+
+        def _lane(lane_repo: str) -> None:
+            while True:
+                with lock:
+                    if not work:
+                        return
+                    i = work.pop()
+                f = review.findings[i]
+                try:
+                    self.classify(f, repo_override=lane_repo)
+                except Exception:  # noqa: BLE001 — one lane must not sink the rest
+                    with lock:
+                        failed.append(i)
+
+        try:
+            threads = [threading.Thread(target=_lane, args=(lr,), daemon=True)
+                       for lr in lane_repos]
+            for th in threads:
+                th.start()
+            for th in threads:
+                th.join()
+        finally:
+            for r in lane_roots:
+                shutil.rmtree(r, ignore_errors=True)
+        for i in failed:  # sequential authority for anything a lane dropped
+            self.classify(review.findings[i])
+        return lanes
 
     def run(self, review: ReviewRun, batch: bool = True) -> ReviewRun:
         """Classify all findings against one warm base. With batch=True the
@@ -946,5 +1141,8 @@ class FindingVerifier:
                     self.classify(f)
             return review
         finally:
+            # v13: persist this run's vite transforms before any teardown —
+            # runs with reuse_warm re-stow too, so the entry stays current.
+            self._restow_vite_cache()
             if not self.reuse_warm:
                 self.close()

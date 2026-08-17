@@ -59,6 +59,16 @@ def scrubbed_env(profile_env: dict[str, str],
     env = {**os.environ, **profile_env}
     for key in _PROVIDER_CREDENTIALS:
         env.pop(key, None)
+    # scm fix (sig EDGEVERDICT_SCM_PRETEND_V1): the sandbox copy strips .git
+    # (rightly — untrusted code must not read history), but setuptools-scm /
+    # hatch-vcs repos COMPUTE their version from git metadata at build time,
+    # so their editable install dies with metadata-generation-failed on a
+    # tree that is otherwise perfectly buildable (found twice by tenacity's
+    # certify run). Default the pretend version so VCS-versioned repos
+    # install; setdefault so an explicit value — hers, or a future
+    # per-repo one — always wins. hatch-vcs delegates to setuptools-scm,
+    # so the one variable covers both.
+    env.setdefault("SETUPTOOLS_SCM_PRETEND_VERSION", "0.0.0")
     if cache_root:
         env["npm_config_cache"] = os.path.join(cache_root, "npm-cache")
         env["npm_config_store_dir"] = os.path.join(cache_root, "pnpm-store")
