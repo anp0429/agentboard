@@ -36,6 +36,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -244,6 +245,184 @@ def _invalidate_cache_entry(fp: str) -> None:
     shutil.rmtree(os.path.join(_warm_cache_root(), fp), ignore_errors=True)
 
 
+# -- environment preflight + first-failure triage ----------------------------
+# (sig EDGEVERDICT_ENV_PREFLIGHT_V1)
+# One afternoon priced this: a missing env var is knowable in ZERO seconds,
+# but without these checks it surfaces as minutes of npm DNS backoff
+# (EAI_AGAIN under --network none), or as OOM-killed installs at 90-165s a
+# run under the default 2g/512m sandbox limits — each retried by a ladder
+# that cannot help, each with the real cause swallowed. Three principles:
+# refuse up front what cannot succeed; when the first attempt names a cause
+# no retry can fix, stop and say the fix; degrade out loud WITH the cause.
+
+_NETWORK_FAILURE_MARKS = ("EAI_AGAIN", "getaddrinfo", "ENOTFOUND")
+_RESOURCE_FAILURE_MARKS = (
+    "ENOSPC", "No space left on device", "no space left on device",
+    "heap out of memory", "Killed", "ENOMEM",
+)
+
+
+def _install_failure_class(proc) -> str:
+    """"network" | "resources" | "" for a failed install — the classes whose
+    retries are guaranteed wasted (the network will not appear, the memory
+    will not grow). Empty string means the ordinary retry ladder applies."""
+    rc = getattr(proc, "returncode", 0)
+    tail = (proc.stderr or "") + (proc.stdout or "")
+    if any(m in tail for m in _NETWORK_FAILURE_MARKS):
+        return "network"
+    if rc in (137, -9) or any(m in tail for m in _RESOURCE_FAILURE_MARKS):
+        return "resources"
+    return ""
+
+
+_DEFAULT_LIMIT_HINT = (
+    "sandbox limits are at defaults (memory 2g, tmpfs 512m) on a WORKSPACE "
+    "repo — monorepo installs commonly exceed them and die as OOM or "
+    "no-space with misleading errors. If this repo is large, set "
+    "EDGEVERDICT_SANDBOX_MEMORY=8g and EDGEVERDICT_TMPFS_SIZE=8g.")
+
+
+def _limits_at_defaults(backend) -> bool:
+    limits = getattr(backend, "limits", None)
+    if limits is None:
+        return False
+    return (getattr(limits, "memory", "") == "2g"
+            and getattr(limits, "tmpfs_size", "") == "512m")
+
+
+# -- cache root anchoring (sig EDGEVERDICT_CACHE_ROOT_ANCHOR_V1) -------------
+# The direct runner repoints _workdir to the PACKAGE dir (that is where the
+# resolved vitest binary and its package-relative test path live), and it
+# activates BEFORE the cache write. Cache paths must NOT follow it: the warm
+# cache stores the workspace ROOT node_modules — the tree that owns the .pnpm
+# store. Left on _workdir, the write captured apps/<pkg>/node_modules (a
+# forest of relative symlinks into a store it does not contain), labeled it
+# "node_modules", and the next run restored it to the ROOT: every symlink
+# dangled and the runner died booting (MODULE_NOT_FOUND, empty requireStack)
+# with smoke skipped by the per-project marker. Install/restore/heal/write
+# therefore anchor at _rootdir; _workdir keeps meaning exactly one thing:
+# where run commands execute.
+
+
+def _cache_entry_poisoned(cached_nm: str, install_cmd: list[str]) -> bool:
+    """True when a cached "root" node_modules is recognizably a PACKAGE tree
+    cached under the root's name (the pre-root-anchor bug): a pnpm-managed
+    tree whose top level has no .pnpm virtual store. Restoring such a tree
+    to the root leaves every per-package relative symlink dangling."""
+    if not any("pnpm" in part for part in install_cmd):
+        return False
+    if not os.path.isdir(cached_nm):
+        return False
+    return not os.path.isdir(os.path.join(cached_nm, ".pnpm"))
+
+
+# -- materialized whole-tree cache (sig EDGEVERDICT_MATERIALIZED_TREE_V1) ----
+# pnpm's per-package symlinks are RELATIVE (readlink apps/x/node_modules/dep
+# = ../../../node_modules/.pnpm/dep@v/node_modules/dep): they survive any
+# clone that keeps the relative layout. So a workspace entry can persist the
+# per-package node_modules trees ALONGSIDE the root tree and a restore can
+# place both at their recorded repo-relative positions — the whole
+# materialized layout comes back valid with NO relink. Entries carrying the
+# marker skip the offline relink entirely; entries without it (older format,
+# or a capture that failed mid-way) keep the proven relink path. Capture and
+# restore are best-effort in the same spirit as the rest of the cache: any
+# doubt degrades to the slower correct path, never to a broken tree.
+
+_PKG_TREES_DIR = "pkg-trees"
+_MATERIALIZED_MARKER = "materialized.ok"
+
+
+def _clone_tree(src: str, dst: str) -> None:
+    """Copy a directory tree preserving symlinks, using APFS copy-on-write
+    cloning when the platform offers it. On macOS `/bin/cp -cR` clones file
+    data via clonefile(2) — measured minutes-to-seconds on a multi-GB
+    node_modules versus a byte-copying copytree. Anywhere cloning is
+    unavailable or fails, fall back to shutil.copytree(symlinks=True): the
+    result is identical, only slower. dst must not exist."""
+    if sys.platform == "darwin":
+        try:
+            r = subprocess.run(["/bin/cp", "-cR", src, dst], check=False,
+                               capture_output=True, text=True, timeout=1800)
+            if r.returncode == 0 and os.path.isdir(dst):
+                return
+            shutil.rmtree(dst, ignore_errors=True)
+        except (OSError, subprocess.TimeoutExpired, subprocess.SubprocessError):
+            shutil.rmtree(dst, ignore_errors=True)
+    shutil.copytree(src, dst, symlinks=True)
+
+
+def _enumerate_pkg_nm(root: str) -> list[str]:
+    """Repo-relative dirs of every PER-PACKAGE node_modules in a workspace
+    tree (apps/x, packages/y, ...) — the root's own node_modules excluded,
+    descent into any node_modules and into .git pruned so nested trees inside
+    the store are never double-captured."""
+    out: list[str] = []
+    root = os.path.normpath(root)
+    for cur, dirnames, _files in os.walk(root):
+        if "node_modules" in dirnames:
+            rel = os.path.relpath(cur, root)
+            if rel != ".":
+                out.append(rel.replace(os.sep, "/"))
+            dirnames.remove("node_modules")
+        if ".git" in dirnames:
+            dirnames.remove(".git")
+    return sorted(out)
+
+
+def _capture_pkg_trees(rootdir: str, cdir: str) -> bool:
+    """Persist every per-package node_modules into the cache entry under
+    pkg-trees/<pkg_rel>/node_modules, preserving the repo-relative layout the
+    relative symlinks depend on. Atomic (built under a tmp dir, os.replace'd
+    in) and best-effort: False means the entry simply stays non-materialized
+    and the restore path keeps using the offline relink."""
+    pkgs = _enumerate_pkg_nm(rootdir)
+    if not pkgs:
+        return False
+    tmp = cdir + ".tmp-" + _PKG_TREES_DIR
+    shutil.rmtree(tmp, ignore_errors=True)
+    try:
+        for rel in pkgs:
+            src = os.path.join(rootdir, rel, "node_modules")
+            dst = os.path.join(tmp, rel, "node_modules")
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            _clone_tree(src, dst)
+        final = os.path.join(cdir, _PKG_TREES_DIR)
+        shutil.rmtree(final, ignore_errors=True)
+        os.replace(tmp, final)
+        with open(os.path.join(cdir, _MATERIALIZED_MARKER), "w") as mf:
+            mf.write("\n".join(pkgs))
+        return True
+    except (OSError, shutil.Error):
+        shutil.rmtree(tmp, ignore_errors=True)
+        return False
+
+
+def _restore_pkg_trees(cdir: str, rootdir: str) -> bool:
+    """Place a materialized entry's per-package trees back at their recorded
+    repo-relative positions. True only when the entry carries the marker and
+    EVERY tree restored — a partial workspace is worse than none, so any
+    failure removes what was placed and reports False (caller falls back to
+    the offline relink)."""
+    trees = os.path.join(cdir, _PKG_TREES_DIR)
+    if not (os.path.isfile(os.path.join(cdir, _MATERIALIZED_MARKER))
+            and os.path.isdir(trees)):
+        return False
+    placed: list[str] = []
+    try:
+        for rel in _enumerate_pkg_nm(trees):
+            src = os.path.join(trees, rel, "node_modules")
+            dst = os.path.join(rootdir, rel, "node_modules")
+            shutil.rmtree(dst, ignore_errors=True)
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            _clone_tree(src, dst)
+            placed.append(dst)
+        return True
+    except (OSError, shutil.Error):
+        for d in placed:
+            shutil.rmtree(d, ignore_errors=True)
+        return False
+
+
 # -- v11 workspace relink (sig EDGEVERDICT_WORKSPACE_RELINK_V1) --------------
 # The warm cache persists the ROOT node_modules only. In a workspace repo
 # (pnpm-workspace.yaml / package.json "workspaces") the package manager also
@@ -380,6 +559,7 @@ class FindingVerifier:
         self._warm_repo: str | None = None
         self._warm_root: str | None = None
         self._cache_fp: str | None = None  # v13: warm-cache key for re-stow
+        self._materialized_restore = False  # per-package trees restored
         self._pristine_tests: str | None = None
         self._prep_error: str = ""
         # Repository lifecycle commands and generated tests never run
@@ -401,6 +581,14 @@ class FindingVerifier:
         pkg = getattr(prof, "pkg_dir", "") if prof else ""
         if getattr(self, "_direct_runner_active", False) and pkg not in ("", "."):
             return os.path.normpath(os.path.join(repo, pkg))
+        return os.path.normpath(os.path.join(repo, self.project_dir))
+
+    def _rootdir(self, repo: str) -> str:
+        # The anchor for INSTALL and CACHE operations: the project dir,
+        # independent of direct-runner activation. _workdir follows the
+        # resolved runner into the package dir; the dependency tree the
+        # cache stores and restores lives at the workspace root and must
+        # never follow it (sig EDGEVERDICT_CACHE_ROOT_ANCHOR_V1).
         return os.path.normpath(os.path.join(repo, self.project_dir))
 
     def _resolve_direct_runner(self, repo: str) -> None:
@@ -511,6 +699,14 @@ class FindingVerifier:
         finally:
             if _dbg:
                 self.log(f"  [debug] DONE in {time.monotonic() - _t0:.1f}s")
+        # a nonzero exit's CAUSE must never be invisible: under debug, print
+        # the failing command's output tail right where it failed, instead
+        # of leaving the cause to whichever later branch happens to (or
+        # forgets to) surface it. (sig EDGEVERDICT_DEBUG_RUN_V1)
+        if _dbg and getattr(result, "returncode", 0) != 0:
+            tail = _runner_tail(result, limit=800)
+            if tail:
+                self.log(f"  [debug] FAILED rc={result.returncode}: {tail}")
         return result
 
     def _fresh_result_path(self, repo: str) -> str:
@@ -580,14 +776,27 @@ class FindingVerifier:
                 cached_nm = os.path.join(cdir, "node_modules")
                 proj_marker = os.path.join(
                     cdir, _project_smoke_marker(self.tests_file))
-                if os.path.isdir(cached_nm) and _nm_complete(cdir):
-                    dest_nm = os.path.join(self._workdir(repo), "node_modules")
+                # a poisoned entry (a package tree cached under the root's
+                # name by the pre-root-anchor bug) restores into a tree of
+                # dangling symlinks with smoke skipped by its marker — the
+                # one failure the self-heal below cannot see. Recognize and
+                # invalidate it up front (sig EDGEVERDICT_CACHE_ROOT_ANCHOR_V1).
+                if _cache_entry_poisoned(cached_nm, self.profile.install_cmd):
+                    self.log("  warm base: cached tree has no .pnpm store "
+                             "(a package tree was cached as the root by a "
+                             "pre-root-anchor build); invalidating cache "
+                             "entry " + fp + " and installing fresh")
+                    _invalidate_cache_entry(fp)
+                    phases.append("cache-poisoned (invalidated)")
+                elif os.path.isdir(cached_nm) and _nm_complete(cdir):
+                    dest_nm = os.path.join(self._rootdir(repo), "node_modules")
                     try:
                         t0 = time.monotonic()
-                        # copy the cached tree in (copy, not symlink: the
-                        # sandbox mount + writes during the run must not
-                        # mutate the shared cache).
-                        shutil.copytree(cached_nm, dest_nm, symlinks=True)
+                        # clone the cached tree in (a copy, not a symlink:
+                        # the sandbox mount + writes during the run must not
+                        # mutate the shared cache; CoW cloning makes the
+                        # copy cheap where the filesystem supports it).
+                        _clone_tree(cached_nm, dest_nm)
                         # the runner BOOTSTRAP rides along: the gate phase
                         # has no network by design, and profiles that launch
                         # via a package-manager bootstrap (npx pnpm) resolve
@@ -601,11 +810,19 @@ class FindingVerifier:
                                 dst_x = os.path.join(self._warm_root, extra)
                                 shutil.rmtree(dst_x, ignore_errors=True)
                                 shutil.copytree(src_x, dst_x, symlinks=True)
+                        # materialized entries also carry the per-package
+                        # trees; placing them here makes the offline relink
+                        # unnecessary (sig EDGEVERDICT_MATERIALIZED_TREE_V1).
+                        self._materialized_restore = _restore_pkg_trees(
+                            cdir, self._rootdir(repo))
                         smoke_skip = os.path.isfile(proj_marker)
                         phases.append(
                             f"cache-restore {time.monotonic() - t0:.1f}s "
-                            + ("(skipped install+smoke)" if smoke_skip
-                               else "(skipped install; smoke runs: first "
+                            + ("(materialized, relink-free"
+                               if self._materialized_restore
+                               else "(root tree")
+                            + ("; skipped install+smoke)" if smoke_skip
+                               else "; skipped install; smoke runs: first "
                                     "time this test project rides this "
                                     "dep cache)"))
                         cache_hit = True
@@ -614,16 +831,20 @@ class FindingVerifier:
                         shutil.rmtree(dest_nm, ignore_errors=True)
                         cache_hit = False
                         smoke_skip = False
+                        self._materialized_restore = False
         # v11 workspace relink: a restored ROOT node_modules is not a whole
         # workspace — materialize per-package trees offline, or distrust
-        # the entry entirely (sig EDGEVERDICT_WORKSPACE_RELINK_V1).
-        if cache_hit and fp and _is_workspace_repo(self.repo_root):
+        # the entry entirely (sig EDGEVERDICT_WORKSPACE_RELINK_V1). A
+        # MATERIALIZED restore already placed the per-package trees, so it
+        # skips this entirely (sig EDGEVERDICT_MATERIALIZED_TREE_V1).
+        if (cache_hit and fp and _is_workspace_repo(self.repo_root)
+                and not getattr(self, "_materialized_restore", False)):
             relink = _offline_relink_cmd(self.profile.install_cmd)
             if relink is not None:
                 t0 = time.monotonic()
                 rl = None
                 try:
-                    rl = self._run(relink, self._workdir(repo))
+                    rl = self._run(relink, self._rootdir(repo))
                 except subprocess.TimeoutExpired:
                     rl = None
                 if rl is None or rl.returncode != 0:
@@ -632,7 +853,7 @@ class FindingVerifier:
                              "entry " + fp + " and retrying with a fresh "
                              "install")
                     _invalidate_cache_entry(fp)
-                    shutil.rmtree(os.path.join(self._workdir(repo),
+                    shutil.rmtree(os.path.join(self._rootdir(repo),
                                                "node_modules"),
                                   ignore_errors=True)
                     cache_hit = False
@@ -645,16 +866,68 @@ class FindingVerifier:
         healed = False
         while True:
             if not cache_hit and self.profile.install_cmd:
+                # refuse up front what cannot succeed: a networked install
+                # under a --network none policy. Without this it burns
+                # minutes of DNS retry backoff before failing with the
+                # cause buried. Backends without a network policy (local)
+                # are unrestricted and skip the check; --offline installs
+                # need no network. (sig EDGEVERDICT_ENV_PREFLIGHT_V1)
+                _backend = getattr(self, "_execution_backend", None)
+                _policy = getattr(_backend, "network_policy", None)
+                if (_policy == "none"
+                        and "--offline" not in self.profile.install_cmd):
+                    self._prep_error = (
+                        "install needs network but the sandbox network "
+                        "policy is 'none' — nothing was attempted. Re-run "
+                        "with EDGEVERDICT_SANDBOX_NETWORK=install to "
+                        "consent to network for the install phase.")
+                    phases.append("install-preflight (no network consent)")
+                    break
+                # a large workspace on default sandbox limits usually dies
+                # mid-install with misleading errors; say so BEFORE the
+                # spend, with the fix named, not after.
+                if (_is_workspace_repo(self.repo_root)
+                        and _limits_at_defaults(_backend)):
+                    self.log("  install: warning: " + _DEFAULT_LIMIT_HINT)
                 t0 = time.monotonic()
                 try:
-                    inst = self._run(self.profile.install_cmd, self._workdir(repo))
+                    inst = self._run(self.profile.install_cmd, self._rootdir(repo))
+                    # first-failure triage: when the cause is one no retry
+                    # can fix (no network / not enough memory or space),
+                    # stop and name the fix instead of paying the whole
+                    # retry ladder. (sig EDGEVERDICT_ENV_PREFLIGHT_V1)
+                    _fclass = ("" if inst.returncode == 0
+                               else _install_failure_class(inst))
+                    if _fclass:
+                        phases.append(
+                            f"install {time.monotonic() - t0:.1f}s "
+                            f"({_fclass} failure; retries skipped)")
+                        _fix = (
+                            "the sandbox could not reach the package "
+                            "registry (DNS). If network was intended, "
+                            "re-run with EDGEVERDICT_SANDBOX_NETWORK="
+                            "install. " if _fclass == "network" else
+                            "the install ran out of memory or disk in the "
+                            "sandbox. Raise EDGEVERDICT_SANDBOX_MEMORY "
+                            "(e.g. 8g) and EDGEVERDICT_TMPFS_SIZE (e.g. "
+                            "8g) and re-run. ")
+                        self._prep_error = ("install failed: " + _fix
+                                            + _strip_pm_noise(_proc_tail(inst)))
+                        break
                     retry = unfrozen_install(self.profile.install_cmd)
                     if inst.returncode != 0 and retry is not None:
                         # stale lockfile, most likely — degrade to the permissive
-                        # install rather than benching the run, but say so out loud.
+                        # install rather than benching the run. Degrading out
+                        # loud includes the CAUSE out loud: the frozen
+                        # failure's own tail, always, not only under debug —
+                        # a swallowed cause turns every frozen retry into a
+                        # guessing game about lockfiles vs network vs config.
                         self.log("  install: frozen lockfile install failed; "
                                  "retrying with --no-frozen-lockfile")
-                        inst = self._run(retry, self._workdir(repo))
+                        self.log("  install: frozen failure cause: "
+                                 + (_strip_pm_noise(_proc_tail(inst))
+                                    or "(no output)"))
+                        inst = self._run(retry, self._rootdir(repo))
                     fallback = getattr(self.profile, "install_fallback_cmd", None)
                     if (inst.returncode != 0 and fallback
                             and fallback != self.profile.install_cmd):
@@ -663,7 +936,7 @@ class FindingVerifier:
                         # the run — degrade to declared deps only, out loud.
                         self.log("  install: supplemented install failed; "
                                  "retrying with declared dependencies only")
-                        inst = self._run(fallback, self._workdir(repo))
+                        inst = self._run(fallback, self._rootdir(repo))
                     # third rung: a pip BUILD-ISOLATION failure (fetching the
                     # [build-system] requires into pip's throwaway build env)
                     # fails on a fresh resample but not on a warm-cached base,
@@ -683,9 +956,9 @@ class FindingVerifier:
                         self.log("  install: build-isolation failed (fetching "
                                  "build deps); seeding setuptools+wheel and "
                                  "retrying with --no-build-isolation")
-                        seed_res = self._run(seed, self._workdir(repo))
+                        seed_res = self._run(seed, self._rootdir(repo))
                         if seed_res.returncode == 0:
-                            inst = self._run(nbi, self._workdir(repo))
+                            inst = self._run(nbi, self._rootdir(repo))
                     phases.append(f"install {time.monotonic() - t0:.1f}s")
                     if inst.returncode != 0:
                         self._prep_error = f"install failed: {_proc_tail(inst)}"
@@ -694,7 +967,7 @@ class FindingVerifier:
             if not cache_hit and not self._prep_error and self.profile.build_cmd:
                 t0 = time.monotonic()
                 try:
-                    bld = self._run(self.profile.build_cmd, self._workdir(repo))
+                    bld = self._run(self.profile.build_cmd, self._rootdir(repo))
                     phases.append(f"build {time.monotonic() - t0:.1f}s")
                     if bld.returncode != 0:
                         self._prep_error = f"build failed: {_proc_tail(bld)}"
@@ -763,11 +1036,12 @@ class FindingVerifier:
                          "base; invalidating cache entry " + fp
                          + " and retrying with a fresh install")
                 _invalidate_cache_entry(fp)
-                shutil.rmtree(os.path.join(self._workdir(repo),
+                shutil.rmtree(os.path.join(self._rootdir(repo),
                                            "node_modules"),
                               ignore_errors=True)
                 cache_hit = False
                 smoke_skip = False
+                self._materialized_restore = False
                 self._prep_error = ""
                 healed = True
                 phases.append("cache-invalidated (self-heal)")
@@ -779,17 +1053,27 @@ class FindingVerifier:
         # Best-effort: a cache-write failure never affects this run.
         if (_warm_cache_enabled() and not cache_hit and not self._prep_error
                 and fp and self.profile.install_cmd):
-            src_nm = os.path.join(self._workdir(repo), "node_modules")
+            # the ROOT tree, never _workdir's: the direct runner has been
+            # active since before smoke, and following it here is the bug
+            # that cached a package tree under the root's name
+            # (sig EDGEVERDICT_CACHE_ROOT_ANCHOR_V1).
+            src_nm = os.path.join(self._rootdir(repo), "node_modules")
             if os.path.isdir(src_nm):
                 cdir = os.path.join(_warm_cache_root(), fp)
                 try:
                     os.makedirs(cdir, exist_ok=True)
                     tmp_nm = cdir + ".tmp-node_modules"
                     shutil.rmtree(tmp_nm, ignore_errors=True)
-                    shutil.copytree(src_nm, tmp_nm, symlinks=True)
+                    _clone_tree(src_nm, tmp_nm)
                     final_nm = os.path.join(cdir, "node_modules")
                     shutil.rmtree(final_nm, ignore_errors=True)
                     os.replace(tmp_nm, final_nm)
+                    # workspace repos: persist the per-package trees too, so
+                    # the next restore is materialized and relink-free
+                    # (sig EDGEVERDICT_MATERIALIZED_TREE_V1). Best-effort —
+                    # a failed capture leaves a valid relink-path entry.
+                    if _is_workspace_repo(self.repo_root):
+                        _capture_pkg_trees(self._rootdir(repo), cdir)
                     # the runner bootstrap rides along with the dep tree:
                     # the install phase (the only networked phase) fetched
                     # the package-manager bootstrap into the session caches;
@@ -856,6 +1140,20 @@ class FindingVerifier:
         cached_nm = os.path.join(cdir, "node_modules")
         if not os.path.isdir(cached_nm):
             return  # entry gone (invalidated mid-run): nothing to enrich
+        # for a filtered package, .vite lives in the PACKAGE tree — the
+        # matching slot in the entry is pkg-trees/<pkg_rel>/node_modules
+        # (sig EDGEVERDICT_MATERIALIZED_TREE_V1). Stowing it under the
+        # cached ROOT tree would restore it where vite never looks. If the
+        # entry has no materialized slot for the package, skip: dead weight
+        # is not enrichment.
+        wd = self._workdir(self._warm_repo)
+        rd = self._rootdir(self._warm_repo)
+        if os.path.normpath(wd) != os.path.normpath(rd):
+            pkg_rel = os.path.relpath(wd, rd).replace(os.sep, "/")
+            cached_nm = os.path.join(
+                cdir, _PKG_TREES_DIR, pkg_rel, "node_modules")
+            if not os.path.isdir(cached_nm):
+                return
         try:
             tmp = cdir + ".tmp-vite"
             shutil.rmtree(tmp, ignore_errors=True)

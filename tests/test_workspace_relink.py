@@ -84,6 +84,10 @@ def _warm_env(tmp_path, monkeypatch, relink_rc):
     cdir = cache_root / fp
     (cdir / "node_modules" / "pkg").mkdir(parents=True)
     (cdir / "node_modules" / "pkg" / "index.js").write_text("ok")
+    # a legit pnpm ROOT tree carries the .pnpm virtual store; without it the
+    # poison guard (sig EDGEVERDICT_CACHE_ROOT_ANCHOR_V1) rightly refuses
+    # the entry as a package tree cached under the root's name.
+    (cdir / "node_modules" / ".pnpm").mkdir()
     (cdir / "deps.ok").write_text(fp)
 
     fv = FindingVerifier.__new__(FindingVerifier)
