@@ -37,6 +37,7 @@ def _review(n_gaps):
 
 def test_parallel_lanes_get_private_repo_copies(tmp_path, monkeypatch):
     monkeypatch.setenv("EDGEVERDICT_CONFIRM_WORKERS", "3")
+    monkeypatch.setenv("EDGEVERDICT_CONFIRM_PARALLEL", "1")
     fv = _fv(tmp_path)
     seen: list[str | None] = []
     lock = threading.Lock()
@@ -59,6 +60,7 @@ def test_parallel_lanes_get_private_repo_copies(tmp_path, monkeypatch):
 
 def test_lane_copies_are_cleaned_up(tmp_path, monkeypatch):
     monkeypatch.setenv("EDGEVERDICT_CONFIRM_WORKERS", "2")
+    monkeypatch.setenv("EDGEVERDICT_CONFIRM_PARALLEL", "1")
     fv = _fv(tmp_path)
     lanes: list[str] = []
     lock = threading.Lock()
@@ -148,6 +150,7 @@ def test_copy_failure_falls_back_to_sequential(tmp_path, monkeypatch):
 
 def test_artifact_and_confirmation_notes_survive_parallel(tmp_path, monkeypatch):
     monkeypatch.setenv("EDGEVERDICT_CONFIRM_WORKERS", "2")
+    monkeypatch.setenv("EDGEVERDICT_CONFIRM_PARALLEL", "1")
     fv = _fv(tmp_path)
 
     def fake_classify(f, repo_override=None):
@@ -180,3 +183,42 @@ def test_confirm_workers_env_parsing(monkeypatch):
     assert fv._confirm_workers() == 1
     monkeypatch.setenv("EDGEVERDICT_CONFIRM_WORKERS", "banana")
     assert fv._confirm_workers() == 1
+
+
+def test_default_is_sequential_no_copies(tmp_path, monkeypatch):
+    # sig EDGEVERDICT_CONFIRM_INPLACE_V1: with the direct runner each re-gate
+    # is ~0.2s, so the copy-per-lane path is off by default. Even with 4
+    # workers and 4 gaps, confirm runs in-place (repo_override=None) and
+    # copies nothing.
+    monkeypatch.setenv("EDGEVERDICT_CONFIRM_WORKERS", "4")
+    monkeypatch.delenv("EDGEVERDICT_CONFIRM_PARALLEL", raising=False)
+    fv = _fv(tmp_path)
+    overrides: list[str | None] = []
+
+    def fake_classify(f, repo_override=None):
+        overrides.append(repo_override)
+        f.status = "confirmed_gap"
+        return f
+
+    fv.classify = fake_classify
+    fv._confirm_batch_gaps(_review(4), leftover=set())
+    # all in-place: no private-copy repo_override was ever used
+    assert overrides == [None, None, None, None]
+
+
+def test_parallel_opt_in_restores_copies(tmp_path, monkeypatch):
+    # the copy-per-lane path is still available behind the flag
+    monkeypatch.setenv("EDGEVERDICT_CONFIRM_WORKERS", "3")
+    monkeypatch.setenv("EDGEVERDICT_CONFIRM_PARALLEL", "1")
+    fv = _fv(tmp_path)
+    overrides: list[str | None] = []
+
+    def fake_classify(f, repo_override=None):
+        overrides.append(repo_override)
+        f.status = "confirmed_gap"
+        return f
+
+    fv.classify = fake_classify
+    fv._confirm_batch_gaps(_review(4), leftover=set())
+    # at least one lane ran against a private copy (repo_override set)
+    assert any(o is not None for o in overrides)

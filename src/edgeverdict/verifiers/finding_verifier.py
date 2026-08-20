@@ -39,7 +39,7 @@ import subprocess
 import tempfile
 import threading
 import time
-
+from dataclasses import replace
 from ..execution import backend_from_env
 from ..review import ReviewFinding, ReviewRun
 from .harness import Harness, VitestHarness
@@ -394,7 +394,91 @@ class FindingVerifier:
         )
 
     def _workdir(self, repo: str) -> str:
+        # When a pnpm --filter/pkg_dir is active, the resolved vitest binary
+        # runs FROM the package dir (that is where its node_modules/.bin and
+        # its package-relative test path resolve). Otherwise the project_dir.
+        prof = getattr(self, "profile", None)
+        pkg = getattr(prof, "pkg_dir", "") if prof else ""
+        if getattr(self, "_direct_runner_active", False) and pkg not in ("", "."):
+            return os.path.normpath(os.path.join(repo, pkg))
         return os.path.normpath(os.path.join(repo, self.project_dir))
+
+    def _resolve_direct_runner(self, repo: str) -> None:
+        """After install, swap test_base from `npx pnpm [--filter x] exec
+        vitest run` to a DIRECT call of the resolved vitest binary.
+        (sig EDGEVERDICT_DIRECT_RUNNER_V2)
+
+        Why: `pnpm exec` re-runs pnpm's whole workspace/lockfile resolution on
+        EVERY invocation — measured on supabase/studio at ~76s per call, paid
+        by the batch AND each of the 4 confirm lanes (~307s of confirm). The
+        vitest binary the install already linked runs the identical file in
+        ~0.8s. Install stays via pnpm (once); only the per-test RUN goes direct.
+
+        With a --filter, the binary lives in the package dir and the run must
+        happen there (see _workdir), so we resolve <pkg_dir>/node_modules/.bin/
+        vitest and drop the pnpm/--filter/exec wrapper, keeping the tail after
+        `run` (--project, extra args). No-op (keeps the pnpm-exec fallback) if
+        the binary isn't found or this isn't a vitest profile, so nothing
+        regresses on layouts we can't resolve."""
+        if getattr(self.profile, "kind", None) != "vitest":
+            return
+        pkg = getattr(self.profile, "pkg_dir", "") or ""
+        # search dirs, most specific first: the package dir (filter case),
+        # then the workdir, then walk up to repo root.
+        starts = []
+        if pkg not in ("", "."):
+            starts.append(os.path.normpath(os.path.join(repo, pkg)))
+        starts.append(os.path.normpath(os.path.join(repo, self.project_dir)))
+        found = None
+        seen = set()
+        for start in starts:
+            cur = start
+            while True:
+                if cur in seen:
+                    break
+                seen.add(cur)
+                cand = os.path.join(cur, "node_modules", ".bin", "vitest")
+                if os.path.isfile(cand) or os.path.islink(cand):
+                    found = cand
+                    break
+                if os.path.normpath(cur) == os.path.normpath(repo):
+                    break
+                parent = os.path.dirname(cur)
+                if parent == cur:
+                    break
+                cur = parent
+            if found:
+                break
+        if not found:
+            return  # keep the pnpm-exec fallback
+        old = self.profile.test_base
+        tail: list[str] = []
+        if "run" in old:
+            tail = old[old.index("run") + 1:]
+        # Store the binary REPO-RELATIVE, not absolute: confirm lanes run in
+        # PRIVATE copies of the warm repo (repo_override), and each copy has
+        # its OWN node_modules/.bin/vitest. An absolute path would point every
+        # lane at the ORIGINAL warm repo's binary while cwd is the copy — a
+        # cross-repo mismatch. _direct_test_base(repo) rebinds the binary to
+        # whichever repo is actually running.
+        self._direct_runner_rel = os.path.relpath(found, repo)
+        self._direct_runner_tail = tail
+        self._direct_runner_active = True
+        # test_base for the shared warm repo (batch, non-override runs)
+        self.profile.test_base = self._direct_test_base(repo)
+        probe = getattr(self.profile, "smoke_probe", None)
+        if probe and getattr(self.profile, "smoke_cmd", None):
+            self.profile.smoke_cmd = self.profile.test_base + [probe[0]]
+        self.log(f"  direct runner: {self._direct_runner_rel} "
+                 "(bypassing pnpm exec per-call overhead)")
+
+    def _direct_test_base(self, repo: str) -> list[str]:
+        """The direct-runner test_base bound to a SPECIFIC repo — the shared
+        warm repo for batch, or a confirm lane's private copy. Rebuilds the
+        absolute binary path from the repo-relative one so each copy runs its
+        own vitest binary."""
+        binary = os.path.join(repo, self._direct_runner_rel)
+        return [binary, "run", *self._direct_runner_tail]
 
     def _run(self, args, cwd):
         # scrubbed_env remains defense in depth. The backend applies a
@@ -605,6 +689,13 @@ class FindingVerifier:
                         self._prep_error = f"build failed: {_proc_tail(bld)}"
                 except subprocess.TimeoutExpired:
                     self._prep_error = f"build did not finish within {self.timeout}s"
+            # After install/restore linked the deps, swap the per-test command
+            # from `pnpm exec` to the resolved vitest binary — the biggest
+            # measured speed lever (pnpm exec re-resolves the workspace every
+            # call, ~76s; the binary runs the same file in ~0.8s). Done before
+            # smoke so the probe runs direct too and vouches for the binary.
+            if not self._prep_error:
+                self._resolve_direct_runner(repo)
             # functional smoke probe: prove the runner starts before judging
             # anything. An exit code can lie across toolchain versions; a probe
             # that actually launches the runner cannot.
@@ -823,9 +914,16 @@ class FindingVerifier:
             with open(tpath, "w", encoding="utf-8") as f:
                 f.write(injected)
             out = self._fresh_result_path(repo)
+            # Bind the direct-runner binary to THIS repo (a confirm lane's
+            # private copy has its own node_modules/.bin/vitest). Non-direct
+            # profiles keep their pnpm-exec test_base unchanged.
+            run_profile = self.profile
+            if getattr(self, "_direct_runner_active", False):
+                run_profile = replace(
+                    self.profile, test_base=self._direct_test_base(repo))
             try:
                 proc = self._run(
-                    self.harness.serial_command(self.profile, self._cmd_tests_file,
+                    self.harness.serial_command(run_profile, self._cmd_tests_file,
                                                 serial_title, out,
                                                 is_parameterized=parameterized),
                     self._workdir(repo),
@@ -1059,7 +1157,16 @@ class FindingVerifier:
         # to the proven sequential path; parallel is an optimization layer,
         # sequential stays the authority.
         lanes = 0
-        if (self._confirm_workers() > 1 and len(idxs) > 1
+        # Parallel lanes each COPY the whole warm repo (node_modules and all)
+        # before running — measured at ~236s of copytree on supabase/studio to
+        # run four 0.2s tests. That trade made sense when a re-gate was ~79s
+        # (pnpm exec); with the direct runner each re-gate is ~0.2s, so
+        # sequential in the shared warm repo is ~0.8s total and copies nothing.
+        # Sequential is now the DEFAULT; parallel copies are opt-in for the
+        # rare case of genuinely slow per-run environments.
+        # (sig EDGEVERDICT_CONFIRM_INPLACE_V1)
+        if (self._confirm_parallel_enabled()
+                and self._confirm_workers() > 1 and len(idxs) > 1
                 and self._warm_repo is not None):
             try:
                 lanes = self._regate_parallel(review, idxs)
@@ -1089,6 +1196,16 @@ class FindingVerifier:
             f"{len(idxs)} batch gap(s) re-gated in isolation — "
             f"{survived} confirmed, {artifacts} batch artifact(s)"
             + (f" [{lanes} parallel lane(s)]" if lanes else ""))
+
+    @staticmethod
+    def _confirm_parallel_enabled() -> bool:
+        """Parallel confirm lanes COPY the warm repo per lane — only worth it
+        when a single re-gate is slow. With the direct runner a re-gate is
+        ~0.2s, so the copies (hundreds of seconds on a big monorepo) cost far
+        more than they save; sequential in-place is the default. Set
+        EDGEVERDICT_CONFIRM_PARALLEL=1 to re-enable the copy-per-lane path."""
+        return os.environ.get("EDGEVERDICT_CONFIRM_PARALLEL", "").strip() in (
+            "1", "true", "yes", "on")
 
     @staticmethod
     def _confirm_workers() -> int:
