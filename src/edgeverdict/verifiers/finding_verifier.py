@@ -468,7 +468,18 @@ class FindingVerifier:
         self.profile.test_base = self._direct_test_base(repo)
         probe = getattr(self.profile, "smoke_probe", None)
         if probe and getattr(self.profile, "smoke_cmd", None):
-            self.profile.smoke_cmd = self.profile.test_base + [probe[0]]
+            # the probe arg must be package-relative for the same reason the
+            # test path is (direct runner execs from the package dir); strip
+            # pkg_dir so vitest finds the probe beside the package tests.
+            probe_arg = probe[0]
+            _pkg = getattr(self.profile, "pkg_dir", "") or ""
+            if _pkg not in ("", "."):
+                import posixpath
+                _r = posixpath.relpath(probe[0].replace(os.sep, "/"),
+                                       _pkg.replace(os.sep, "/"))
+                if not _r.startswith(".."):
+                    probe_arg = _r
+            self.profile.smoke_cmd = self.profile.test_base + [probe_arg]
         self.log(f"  direct runner: {self._direct_runner_rel} "
                  "(bypassing pnpm exec per-call overhead)")
 
@@ -705,7 +716,22 @@ class FindingVerifier:
                 probe = getattr(self.profile, "smoke_probe", None)
                 probe_path = ""
                 if probe:
-                    probe_path = os.path.join(self._workdir(repo), probe[0])
+                    # probe[0] is repo-relative; when a --filter/direct-runner
+                    # makes _workdir the PACKAGE dir, a repo-relative join
+                    # doubles the prefix (apps/studio/apps/studio/...). Strip
+                    # pkg_dir so the probe lands beside the package-relative
+                    # test path.
+                    probe_rel = probe[0]
+                    _pkg = getattr(self.profile, "pkg_dir", "") or ""
+                    if (getattr(self, "_direct_runner_active", False)
+                            and _pkg not in ("", ".")):
+                        import posixpath
+                        _r = posixpath.relpath(
+                            probe[0].replace(os.sep, "/"),
+                            _pkg.replace(os.sep, "/"))
+                        if not _r.startswith(".."):
+                            probe_rel = _r
+                    probe_path = os.path.join(self._workdir(repo), probe_rel)
                     with open(probe_path, "w", encoding="utf-8") as pf:
                         pf.write(probe[1])
                 try:
