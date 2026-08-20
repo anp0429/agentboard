@@ -212,6 +212,14 @@ class RepoProfile:
     # harness.harness_for_profile. Default keeps every existing profile
     # (and every hand-built one in tests) on the vitest path.
     kind: str = "vitest"
+    # When a pnpm --filter is in play, `pnpm --filter <pkg> exec vitest` runs
+    # vitest with cwd INSIDE the package dir. A positional test path handed to
+    # that command must therefore be relative to the package dir, not the repo
+    # root, or vitest looks for apps/studio/apps/studio/... , finds nothing,
+    # and silently falls back to scanning the whole workspace (the ~475s hang).
+    # pkg_dir is that package's repo-relative dir; the verifier strips it from
+    # the command test path. Empty => no filter, path stays repo-relative.
+    pkg_dir: str = ""
 
     # ---- presets for the common cases --------------------------------------
 
@@ -227,6 +235,7 @@ class RepoProfile:
         env: dict[str, str] | None = None,
         pnpm_version: str = "9",
         frozen: bool = False,
+        pkg_dir: str = "",
     ) -> "RepoProfile":
         # Every pnpm invocation goes through an explicitly versioned pnpm via
         # npx — never the ambient corepack shim. The version is the repo's own
@@ -263,6 +272,7 @@ class RepoProfile:
             env={"CI": "true", **(env or {})},
             smoke_cmd=test + [_PROBE_REL],
             smoke_probe=(_PROBE_REL, _PROBE_CONTENT),
+            pkg_dir=pkg_dir or "",
         )
 
     @classmethod

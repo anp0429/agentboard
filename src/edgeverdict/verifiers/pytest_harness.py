@@ -491,8 +491,10 @@ class PytestHarness(Harness):
         ]
 
     def batch_command(self, profile, tests_file: str, mark_prefix: str,
-                      out: str) -> list[str]:
+                      out: str, scoped: bool = True) -> list[str]:
         # -k on the mark: only gate-stamped tests run, mirroring vitest -t.
+        # pytest always names the file (never had the whole-suite-scan problem
+        # vitest had); scoped is accepted for interface parity.
         return profile.test_base + [
             tests_file, "-k", mark_prefix, "-q", f"--junit-xml={out}",
         ]

@@ -648,6 +648,10 @@ def build_profile(repo_root: str, cfg: Config, tests_file: str,
             # honor the repo's pinned dependency set when it ships one; the
             # verifier retries unfrozen (with a note) if the pin is stale
             frozen=os.path.isfile(os.path.join(scan_root, "pnpm-lock.yaml")),
+            # the package dir the --filter execs inside, so the verifier can
+            # make the command's test path package-relative (else it doubles
+            # the prefix and vitest scans the whole workspace).
+            pkg_dir=ws_pkg_dir or "",
         )
     if kind in ("npm-vitest", "pnpm-vitest") or prof.kind == "vitest":
         # catch 5b: aim the smoke probe at the tests file's own directory,

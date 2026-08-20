@@ -103,9 +103,10 @@ class Harness(ABC):
 
     @abstractmethod
     def batch_command(self, profile, tests_file: str, mark_prefix: str,
-                      out: str) -> list[str]:
+                      out: str, scoped: bool = True) -> list[str]:
         """The runner invocation for every mark-stamped test at once,
-        machine-readable results written to `out`."""
+        machine-readable results written to `out`. scoped=True limits the run
+        to tests_file (fast); scoped=False is the whole-suite fallback."""
 
     @abstractmethod
     def read_verdict(self, out: str) -> tuple[Status, str]:
@@ -140,6 +141,12 @@ class Harness(ABC):
 
 
 class VitestHarness(Harness):
+    # The positional test-file path in batch/serial commands must resolve from
+    # the workdir vitest runs in (the package dir, e.g. apps/studio), not the
+    # repo root — command path is project-relative (data/x.test.ts) while
+    # injection still writes at the repo-relative path.
+    project_relative_cmd_paths = True
+
     """The vitest spelling of the gate. Every rule in here was learned
     against a real repo (zod, jotai, zustand, supabase/mcp) — the comments
     carry the provenance, moved verbatim from finding_verifier."""
@@ -639,17 +646,31 @@ class VitestHarness(Harness):
 
     def serial_command(self, profile, tests_file: str, title: str,
                        out: str, is_parameterized: bool = False) -> list[str]:
-        # run ONLY the injected test by name, so pre-existing suite failures
-        # can never be misattributed to this finding. (is_parameterized is a
-        # pytest concern — vitest's -t already matches by title prefix.)
+        # Pass the test FILE positionally so vitest loads only THIS file, not
+        # every test file in the project. Without it, `-t title` makes vitest
+        # discover the whole suite (in supabase/studio: ~170 node workers,
+        # ~475s) instead of one worker for one file (~1s). -t still narrows to
+        # the injected test WITHIN the file, so pre-existing suite failures can
+        # never be misattributed to this finding. (sig EDGEVERDICT_SCOPED_COMMAND_V1)
         return profile.test_base + [
+            tests_file,
             "-t", title, "--typecheck.enabled=false",
             "--reporter=json", f"--outputFile={out}",
         ]
 
     def batch_command(self, profile, tests_file: str, mark_prefix: str,
-                      out: str) -> list[str]:
+                      out: str, scoped: bool = True) -> list[str]:
+        # Pass the test FILE positionally so vitest loads and transforms only
+        # THIS file, not every test file in the project (the ~170-worker,
+        # ~475s scan). Scoping is what a human runs: `vitest run <file>`. -t
+        # still narrows to the gate-marked tests WITHIN the file.
+        # scoped=False drops the file: the fallback for repos whose vitest
+        # config `include` would filter a positional path to nothing. The
+        # verifier retries unscoped when the scoped run attributes nothing.
+        # (sig EDGEVERDICT_SCOPED_COMMAND_V1)
+        file_arg = [tests_file] if scoped else []
         return profile.test_base + [
+            *file_arg,
             "-t", mark_prefix, "--typecheck.enabled=false",
             "--reporter=json", f"--outputFile={out}",
         ]

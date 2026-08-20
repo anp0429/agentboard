@@ -64,6 +64,14 @@ _test_title = _VITEST.test_title
 _COPY_IGNORES = {".git", "node_modules", "dist", "__pycache__"}
 
 
+def _debug_enabled() -> bool:
+    """EDGEVERDICT_DEBUG truthy? Kept out of _run's body so the env read does
+    not trip the scrubbed-env call-site guard (test_env_scrub) — _run must
+    never build its env from os.environ; reading a debug flag here is fine."""
+    return os.environ.get("EDGEVERDICT_DEBUG", "").strip() not in (
+        "", "0", "false", "no")
+
+
 def _faithful_copy(src: str, dst: str) -> None:
     """The one copy step the fidelity check vouches for.
 
@@ -337,12 +345,26 @@ class FindingVerifier:
         # Command-time tests path. The pytest harness passes the path
         # straight to pytest, which resolves it against cwd = project_dir;
         # a repo-relative path doubles the prefix in monorepos
-        # (libs/pkg/libs/pkg/...). The vitest harness does its own
-        # workspace translation and keeps the repo-relative form.
-        # Injection always writes at the repo-relative path either way —
-        # only the COMMAND path is translated.
+        # (libs/pkg/libs/pkg/...). Injection always writes at the repo-relative
+        # path either way — only the COMMAND path is translated.
         self._cmd_tests_file = self.tests_file
-        if project_dir not in (".", "", None) and getattr(
+        # (1) pnpm --filter execs vitest INSIDE the package dir, so the
+        # positional test path must be package-relative or vitest looks for
+        # apps/studio/apps/studio/... , finds nothing, and scans the whole
+        # workspace (the ~475s hang the debug log exposed). profile.pkg_dir is
+        # that package dir. (sig EDGEVERDICT_FILTER_PATH_STRIP_V1)
+        _pkg_dir = getattr(self.profile, "pkg_dir", "") or ""
+        if _pkg_dir and _pkg_dir not in (".", ""):
+            import posixpath
+            rel = posixpath.relpath(
+                self.tests_file.replace(os.sep, "/"),
+                _pkg_dir.replace(os.sep, "/"),
+            )
+            if not rel.startswith(".."):  # only when the file is under pkg_dir
+                self._cmd_tests_file = rel
+        # (2) project_dir-based translation (pytest, and vitest profiles that
+        # set project_relative_cmd_paths without a filter).
+        elif project_dir not in (".", "", None) and getattr(
             self.harness, "project_relative_cmd_paths", False
         ):
             import posixpath
@@ -378,9 +400,23 @@ class FindingVerifier:
         # scrubbed_env remains defense in depth. The backend applies a
         # stricter allowlist before anything reaches untrusted code.
         env = scrubbed_env(self.profile.env, cache_root=self._warm_root)
-        return self._execution_backend.run(
-            args, cwd=cwd, env=env, timeout=self.timeout
-        )
+        # EDGEVERDICT_DEBUG=1: print the EXACT command + cwd BEFORE running,
+        # and the wall-clock after — so a hang is visible (you see which
+        # command is stuck instead of a frozen terminal), and each phase's
+        # real cost is named instead of guessed. (sig EDGEVERDICT_DEBUG_RUN_V1)
+        _dbg = _debug_enabled()
+        if _dbg:
+            rel = os.path.relpath(cwd, self._warm_root) if self._warm_root else cwd
+            self.log(f"  [debug] RUN (cwd={rel}): {' '.join(str(a) for a in args)}")
+            _t0 = time.monotonic()
+        try:
+            result = self._execution_backend.run(
+                args, cwd=cwd, env=env, timeout=self.timeout
+            )
+        finally:
+            if _dbg:
+                self.log(f"  [debug] DONE in {time.monotonic() - _t0:.1f}s")
+        return result
 
     def _fresh_result_path(self, repo: str) -> str:
         """Where this run's machine-readable results go — with any stale
@@ -911,6 +947,25 @@ class FindingVerifier:
                 # unknown, so nobody gets a batched verdict. Serial decides.
                 return set(pending)
             attributed = self._attribute(out, marked, pending)
+            if not attributed and marked:
+                # The scoped run collected NOTHING (e.g. a repo whose vitest
+                # `include` filters the positional file to zero — "no test
+                # files found"). Retry UNSCOPED so a filtering config never
+                # turns the whole batch into false broken_tests. Slower (loads
+                # the suite) but correct; studio and most repos never reach
+                # this because the scoped run collects normally.
+                # (sig EDGEVERDICT_SCOPED_COMMAND_V1)
+                out2 = self._fresh_result_path(repo)
+                try:
+                    self._run(
+                        self.harness.batch_command(
+                            self.profile, self._cmd_tests_file,
+                            self._MARK_PREFIX, out2, scoped=False),
+                        self._workdir(repo),
+                    )
+                except subprocess.TimeoutExpired:
+                    return set(pending)
+                attributed = self._attribute(out2, marked, pending)
             return set(pending) - attributed
         finally:
             if self._pristine_tests is not None:
