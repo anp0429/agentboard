@@ -380,7 +380,16 @@ def _run_review_pipeline(request: ReviewRequest, log=print) -> ReviewResult:
                                    harness=harness_for_profile(pair_profile))
         try:
             verifier.run(sub)
-            if not req.no_repair:
+            # repair patches TESTS; an environment failure means no test
+            # was executed at all, so there is nothing a patch can fix —
+            # yet each "broken" finding would still cost an LLM call. One
+            # Ctrl-C stack trace deep in repairer.repair() during an
+            # env-failed run priced this. Skip repair entirely when the
+            # run env-failed. (sig EDGEVERDICT_ENV_PREFLIGHT_V1)
+            if sub.env_error:
+                log("  repair: skipped — environment failure benched this "
+                    "run; repairing tests cannot fix the environment")
+            elif not req.no_repair:
                 # ONE bounded repair round: a broken proposal is the
                 # proposer's failure and a lost attempt — feed it the exact
                 # error and the target's real import surface, once. Repaired
