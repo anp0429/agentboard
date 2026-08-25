@@ -3,7 +3,7 @@
 [![CI](https://github.com/anp0429/edgeverdict/actions/workflows/ci.yml/badge.svg)](https://github.com/anp0429/edgeverdict/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-<!-- README_V10_MODE2 -->
+<!-- README_V11_MONOREPO_SPEED -->
 
 A review gate that proposes edge cases and executes them before
 judging. A model proposes the tests; the verdict comes from running
@@ -348,8 +348,18 @@ the raised error.
 ## Monorepos and integration tests
 
 A repository's most valuable tests are often the ones that talk to a real
-database, and monorepos are where most real code lives. Three opt-in
-pieces, all off by default, make those suites gateable:
+database, and monorepos are where most real code lives. edgeverdict gates
+pnpm workspaces natively: the target's package is resolved from the
+workspace layout, the install runs at the workspace root the way the repo's
+own CI would, and test execution is scoped to the package that owns the
+resolved test file, invoking that package's own runner binary directly
+rather than re-resolving the workspace on every call. On
+supabase/supabase, a 28-project pnpm workspace, that scoping is the
+difference between one test worker and a whole-workspace discovery pass;
+the gate itself runs in seconds.
+
+Three opt-in pieces, all off by default, make service-backed suites
+gateable:
 
 **Reaching a database.** The sandbox has no network, so a generated test
 that needs Postgres cannot reach one. Setting `EDGEVERDICT_DB_URL` grants
@@ -364,8 +374,14 @@ only; the threat model is in [SECURITY.md](SECURITY.md).
 **A warm base across runs.** Installing a monorepo's dependencies and
 smoke-verifying the environment are properties of the repository's
 dependency state, not of the change under review, so
-`EDGEVERDICT_WARM_CACHE=1` caches both across runs. Details in Caching
-and cost below.
+`EDGEVERDICT_WARM_CACHE=1` caches both across runs. The cache stores the
+whole materialized workspace and restores it as one tree, so pnpm's
+relative symlink forest survives intact and no re-link step runs on
+restore. Measured on supabase/supabase: the first run pays the full
+workspace install (about 65 seconds with install networking); every warm
+run after it restores the installed workspace in about 29 seconds and
+skips install, re-link, and smoke entirely. Details in Caching and cost
+below.
 
 **Room to install.** A whole-workspace install can overflow the
 sandbox's RAM-backed `/tmp`. `EDGEVERDICT_TMPFS_SIZE` raises it (default
@@ -375,9 +391,18 @@ since tmpfs pages count against container memory.
 | Variable | Default | Effect |
 | --- | --- | --- |
 | `EDGEVERDICT_DB_URL` | unset | test phase may reach a database you provide |
-| `EDGEVERDICT_WARM_CACHE` | unset | `1` reuses installed deps + smoke verification across runs |
+| `EDGEVERDICT_WARM_CACHE` | unset | `1` reuses the installed workspace + smoke verification across runs |
 | `EDGEVERDICT_TMPFS_SIZE` | `512m` | sandbox `/tmp` size (RAM-backed) |
 | `EDGEVERDICT_SANDBOX_MEMORY` | `2g` | container memory limit |
+| `EDGEVERDICT_SANDBOX_CPUS` | `2` | container CPU limit |
+
+A run on defaults gets a warning up front when the target is a workspace:
+a whole-workspace install does not fit in 2g/512m, and an OOM-killed
+install used to surface as a mysterious mid-install failure. The repo
+ships `prove.sh`, a one-line wrapper with the workspace-sized environment
+baked in (8g memory, 8g tmpfs, 4 CPUs, install networking, warm cache);
+it echoes the environment it runs with and any exported variable
+overrides it.
 
 The harness also parses test titles through wrapper functions. Suites
 that need services usually wrap the runner
@@ -386,12 +411,13 @@ that need services usually wrap the runner
 on exactly the repositories this mode exists for. Titles now resolve
 through arbitrary wrappers, outermost first.
 
-Proven end to end on the supabase/supabase monorepo: the `pg-meta`
-package, whose suite runs hundreds of integration tests against a live
-Postgres, gated with generated tests injected through the repo's own
-`withTestDatabase` wrapper, executed against the live database, real
-verdicts returned, with the warm cache skipping install and smoke on the
-second run.
+Proven end to end on the supabase/supabase monorepo, twice over. The
+`pg-meta` package, whose suite runs hundreds of integration tests against
+a live Postgres, gated with generated tests injected through the repo's
+own `withTestDatabase` wrapper, executed against the live database, real
+verdicts returned. And the `studio` app, where a prove run against a
+merged pull request produced two confirmed gaps that turned out to be
+real bugs, filed upstream. See Results from real repositories below.
 
 The honest boundary: today you stand up the database and set the URL
 yourself. Detecting what services a package needs and provisioning them
@@ -415,11 +441,17 @@ Install and smoke verification cache across runs, opt-in with
 `EDGEVERDICT_WARM_CACHE=1`. Both are properties of the repository's
 dependency state, not of the change under review, so the cache is keyed
 on the lockfile hash plus the install command and package directory; on
-a hit, both the install and the smoke run are skipped and the run goes
-straight to injection and gating. The repository source is always
-freshly copied (the cache holds dependencies only, so code is never
-stale), the smoke marker is written last so a half-written cache is
-never served, and any key mismatch falls back to a normal install.
+a hit, install, smoke, and workspace re-linking are all skipped and the
+run goes straight to injection and gating. For workspace repos the cache
+stores the whole materialized dependency tree, the root store and every
+per-package `node_modules`, captured as one unit after a verified
+install. It restores as one copy-on-write clone, which is why no
+re-link is needed: pnpm's symlinks are relative, and a tree that moves
+together stays valid. The repository source is always freshly copied
+(code is never served stale), the smoke marker is written last so a
+half-written cache is never served, a structural guard detects and
+discards a cache entry whose store is incomplete rather than serving it,
+and any key mismatch falls back to a normal install.
 
 ## Local and open-weight models
 
@@ -489,6 +521,18 @@ not `/models`.
   N² pairings, most of which do not exist in the schema. The fix and the
   generated regression tests (self-referential, cross-schema,
   non-primary-unique, multi-FK, three-column) are merged into main.
+- [supabase/supabase#49545](https://github.com/supabase/supabase/issues/49545)
+  and [#49546](https://github.com/supabase/supabase/issues/49546): a prove
+  run against a merged pull request in the `studio` app (two human
+  approvals, an AI reviewer, full CI green) produced confirmed gaps in the
+  notebook diff derivation that renders the approval preview for
+  assistant-edited notebooks. Two were verified by hand as real bugs: an
+  insert anchored on a previously-moved cell resolves against the anchor's
+  pre-move position, and a downgraded no-op move displaces a removed entry.
+  Both contradict invariants stated in the PR's own description. The
+  failing tests reproduced unchanged across a schema refactor, four
+  follow-up PRs, and ten days of active development before being reported
+  upstream with the tests attached.
 
 Every finding above was produced by executing tests, and every one is
 reproducible by hand.
@@ -575,9 +619,10 @@ is dropped.
   `EDGEVERDICT_DB_URL` opt-in and a database you provide. The tool does
   not provision services yet; that is roadmap.
 - The audit pass is advisory and not yet load-bearing.
-- Vitest (pnpm or npm) is the primary harness. Python/pytest repos are
-  supported with the same verdict taxonomy, but that path is new and
-  experimental.
+- Vitest (pnpm or npm, including workspaces) and pytest are the two
+  harnesses. Jest is not supported: a jest suite is reported as an
+  unsupported environment, not gated. Repos that mix both (jest on the
+  frontend, pytest on the backend) gate on their Python side today.
 - Current vitest is the supported target. Very old checkouts (vitest 0.2x
   era) tend to fail at environment preparation for toolchain reasons that
   predate edgeverdict; the run reports this as an environment failure rather
@@ -673,7 +718,18 @@ EDGEVERDICT_EXECUTION_BACKEND=local EDGEVERDICT_ALLOW_UNSAFE_LOCAL=1 edgeverdict
   hatch for a repo you trust.
 - Install fails or hangs under the default policy — most repositories
   need `EDGEVERDICT_SANDBOX_NETWORK=install`; the default assumes
-  dependencies are already present.
+  dependencies are already present. A preflight now refuses in under a
+  second, naming the variable, when an install will need network it was
+  not granted — instead of letting DNS retries burn minutes first.
+- Environment failures are triaged on first failure, not retried blind:
+  a DNS failure names the network variable, an OOM-killed or
+  disk-full install names `EDGEVERDICT_SANDBOX_MEMORY` and
+  `EDGEVERDICT_TMPFS_SIZE`, and the retry ladder is skipped when
+  retrying cannot help. A frozen-lockfile install that fails for any
+  other reason is still retried without the frozen flag, and the log
+  names both attempts and the cause. Repair never runs after an
+  environment failure, so no tokens are spent on a run the
+  environment already doomed.
 - A frozen-lockfile install that fails is retried automatically
   without the frozen flag; the run log names both attempts.
 - The demo never needs any of this: its bundled target runs with the

@@ -21,6 +21,24 @@ break the core thesis.
   finding, instead of a full reinstall per finding.
 - **Diff ingestion.** Reviews the PR's actual changed lines (vs the merge-base),
   fed whole, not a single hand-picked file.
+- **Monorepos at usable speed.** pnpm workspaces gate natively: the
+  target's package resolves from the workspace layout, execution is
+  scoped to the owning package's own runner binary, and the warm cache
+  stores the whole materialized workspace, restored as one clone with no
+  re-link. On supabase/supabase (28 projects), first run pays the ~65s
+  workspace install; warm runs restore in ~29s and the gate runs in
+  seconds. Environment failures triage on first failure and name the fix
+  variable instead of retrying blind; `prove.sh` bakes the
+  workspace-sized environment in.
+- **Two confirmed bugs in a merged monorepo PR, reported upstream.** A
+  prove run against a merged supabase/supabase studio PR (two human
+  approvals, an AI reviewer, full CI green) produced confirmed gaps in
+  the notebook diff derivation behind the assistant-edit approval
+  preview; two were hand-verified as real, reproduced unchanged across a
+  schema refactor and ten days of development, and filed as
+  [#49545](https://github.com/supabase/supabase/issues/49545) and
+  [#49546](https://github.com/supabase/supabase/issues/49546) with the
+  failing tests attached.
 - **First findings from the pytest path.** Pointed at Python repos it had never
   seen, the gate caught `intword`'s 10^36..10^100 formatting gap in humanize
   (never carries to googol) and marshmallow's nested `error_messages` shared by
@@ -94,6 +112,20 @@ break the core thesis.
   Build the assertion lint (an earlier roadmap claimed one existed, built and tested; a
   `find` says otherwise — corrected here, receipts rule applies to us too), then wire it in
   the loop) and feed assertion-shape guidance back to the proposer.
+- [ ] **Repair as an opt-in verb.** Auto-repair of broken proposals
+  currently rides inside prove. Split it: prove executes, reports
+  verdicts, and stops; `--repair` opts in. A gate run should never
+  spend model tokens the author didn't ask for; this was learned the
+  expensive way when repair fired after an environment failure.
+- [ ] **Change-level reasoning for multi-file agent PRs.** Today a
+  six-file PR is gated as six per-file reviews, which fits how humans
+  factor commits but not how coding agents ship: one behavioral change
+  spread across files. Next arc: read the PR's intent plus the full
+  diff, form change-level behavioral hypotheses, map each to the test
+  surface it can be executed against, and gate those. Same verifier,
+  different proposer. The evaluation arena is agent-written PRs on a
+  large monorepo, where per-file and change-level review genuinely
+  diverge.
 - [ ] **Auditor calibration, round two.** The false-positive-must-cite-source rule
   helped, but the auditor still inverted on two strict catches by citing the *buggy*
   line as the contract (see `BENCHMARK.md`). It reasons from "what the code does," which
@@ -108,9 +140,23 @@ break the core thesis.
   (`EDGEVERDICT_WARM_CACHE`), wrapper-aware test title parsing (suites
   wrapping the runner in helpers like `withTestDatabase` now gate), and
   sandbox size overrides for whole-workspace installs
-  (`EDGEVERDICT_TMPFS_SIZE`, `EDGEVERDICT_SANDBOX_MEMORY`). Proven end
+  (`EDGEVERDICT_TMPFS_SIZE`, `EDGEVERDICT_SANDBOX_MEMORY`,
+  `EDGEVERDICT_SANDBOX_CPUS`). Proven end
   to end on the supabase/supabase monorepo: pg-meta's live-Postgres
   integration suite gated with real verdicts.
+- [x] **Monorepo speed + materialized warm base (shipped).** Test
+  execution scoped to the package that owns the resolved test file,
+  calling that package's runner binary directly instead of re-resolving
+  the workspace per call; serial confirmation re-gates each surviving
+  gap in place in the warm tree. The warm cache captures the whole
+  materialized workspace after a verified install and restores it as one
+  copy-on-write clone: relative symlinks survive, no re-link step, and
+  a structural guard discards incomplete cache entries instead of
+  serving them. Measured on supabase/supabase: warm base ~74s down to
+  ~33s, gate in seconds. Environment preflight refuses ungrated network
+  needs in under a second and triages OOM / DNS / disk failures on
+  first failure, naming the fix variable; repair is suppressed after
+  environment failures.
 - [ ] **Mode 3, provision the package's own test services.** Today the
   human stands up the database and sets the URL. Next: detect a
   package-level test-service declaration and run it, the package's own
@@ -122,6 +168,16 @@ break the core thesis.
   means no services and the run proceeds as-is. Scope guard: per-package
   test services only, never a repository's full platform stack; the
   point is testing one package, not booting the product.
+- [ ] **Python warm cache.** The dependency fingerprint currently reads
+  JS lockfiles only, so Python repos never hit the warm cache and pay
+  the full install every run. Next: fingerprint `uv.lock`,
+  `requirements*.txt`, `poetry.lock`, and `Pipfile.lock`, with the
+  pnpm-specific machinery a no-op on Python repos. This is the gate to
+  running the same monorepo treatment on Python-first repos.
+- [ ] **Jest harness.** Not supported today; a jest suite reports as an
+  unsupported environment rather than gating. Mixed repos (jest
+  frontend, pytest backend) gate on the Python side. Priced as a known
+  gap, not scheduled ahead of the change-level work in Next above.
 
 ## Model work (the reward-function thesis)
 
