@@ -174,23 +174,55 @@ _LOCKFILES = (
     "pnpm-lock.yaml", "package-lock.json", "yarn.lock", "bun.lockb",
 )
 
+# -- python warm cache (sig EDGEVERDICT_PY_WARM_CACHE_V1) --------------------
+# The python lane installs into a user-site under the warm root
+# (PYTHONUSERBASE=/edgeverdict/.edgeverdict-pyuser, set by the docker
+# backend), a sibling of the repo copy -- not node_modules, not inside the
+# repo. Its dependency state is keyed on the resolver's lockfile when the
+# repo ships one (uv, poetry, pdm, pipenv), the pinned requirements files,
+# and pyproject.toml (an editable `.[test]` install is a function of its
+# declared deps). No such file -> None -> normal install, same fail-safe.
+_PY_LOCKFILES = ("uv.lock", "poetry.lock", "pdm.lock", "Pipfile.lock")
+_PY_MANIFESTS = ("pyproject.toml", "setup.cfg", "setup.py")
+_PYUSER_DIR = ".edgeverdict-pyuser"      # under the warm root (mount)
+_PY_CACHE_TREE = "pyuser"                # entry subdir holding the user-site
+
+
+def _py_dep_files(d: str) -> list[str]:
+    """Dependency-state files in one directory, sorted for a stable hash:
+    lockfiles, requirements*.txt, then the manifest."""
+    out = [os.path.join(d, n) for n in _PY_LOCKFILES]
+    try:
+        out.extend(sorted(os.path.join(d, n) for n in os.listdir(d)
+                          if n.startswith("requirements") and n.endswith(".txt")))
+    except OSError:
+        pass
+    out.extend(os.path.join(d, n) for n in _PY_MANIFESTS)
+    return out
+
 
 def _dep_fingerprint(repo_root: str, workdir_rel: str,
-                     install_cmd: list[str]) -> str | None:
+                     install_cmd: list[str], kind: str = "") -> str | None:
     """A stable key for the installed dependency state: hash of the lockfile
     (root and package-level, whichever exist) plus the install command. If no
     lockfile is found the deps aren't reproducible enough to cache -> None
     (caller falls back to a normal install). node_modules is a pure function
-    of the lockfile, so a matching hash means a matching install."""
+    of the lockfile, so a matching hash means a matching install.
+
+    kind="pytest" keys on the python dependency files instead
+    (sig EDGEVERDICT_PY_WARM_CACHE_V1); every other kind is unchanged."""
     h = hashlib.sha256()
     found = False
+    py = kind == "pytest"
     # look for a lockfile at the repo root AND at the package workdir (a
     # monorepo package may have its own, or share the root's).
     seen: set[str] = set()
     for rel_base in ("", workdir_rel):
         d = os.path.normpath(os.path.join(repo_root, rel_base))
-        for lf in _LOCKFILES:
-            p = os.path.join(d, lf)
+        candidates = (_py_dep_files(d) if py
+                      else [os.path.join(d, lf) for lf in _LOCKFILES])
+        for p in candidates:
+            lf = os.path.basename(p)
             if p in seen:
                 continue
             seen.add(p)
@@ -767,11 +799,40 @@ class FindingVerifier:
         cache_hit = False       # deps restored (install skipped)
         smoke_skip = False      # THIS project's smoke already vouched for
         fp: str | None = None
+        py_lane = (getattr(self.profile, "kind", "") or "") == "pytest"
         if _warm_cache_enabled() and self.profile.install_cmd:
             fp = _dep_fingerprint(
-                self.repo_root, self.project_dir, self.profile.install_cmd)
+                self.repo_root, self.project_dir, self.profile.install_cmd,
+                kind=getattr(self.profile, "kind", "") or "")
             self._cache_fp = fp  # v13: run() re-stows vite artifacts by key
-            if fp:
+            if fp and py_lane:
+                # python lane: the cached tree is the user-site under the
+                # warm root, not a node_modules (sig EDGEVERDICT_PY_WARM_CACHE_V1)
+                cdir = os.path.join(_warm_cache_root(), fp)
+                cached_py = os.path.join(cdir, _PY_CACHE_TREE)
+                proj_marker = os.path.join(
+                    cdir, _project_smoke_marker(self.tests_file))
+                if os.path.isdir(cached_py) and _nm_complete(cdir) \
+                        and self._warm_root:
+                    dest_py = os.path.join(self._warm_root, _PYUSER_DIR)
+                    try:
+                        t0 = time.monotonic()
+                        shutil.rmtree(dest_py, ignore_errors=True)
+                        _clone_tree(cached_py, dest_py)
+                        smoke_skip = os.path.isfile(proj_marker)
+                        phases.append(
+                            f"cache-restore {time.monotonic() - t0:.1f}s "
+                            "(python user-site"
+                            + ("; skipped install+smoke)" if smoke_skip
+                               else "; skipped install; smoke runs: first "
+                                    "time this test project rides this "
+                                    "dep cache)"))
+                        cache_hit = True
+                    except (OSError, shutil.Error):
+                        shutil.rmtree(dest_py, ignore_errors=True)
+                        cache_hit = False
+                        smoke_skip = False
+            elif fp:
                 cdir = os.path.join(_warm_cache_root(), fp)
                 cached_nm = os.path.join(cdir, "node_modules")
                 proj_marker = os.path.join(
@@ -837,7 +898,8 @@ class FindingVerifier:
         # the entry entirely (sig EDGEVERDICT_WORKSPACE_RELINK_V1). A
         # MATERIALIZED restore already placed the per-package trees, so it
         # skips this entirely (sig EDGEVERDICT_MATERIALIZED_TREE_V1).
-        if (cache_hit and fp and _is_workspace_repo(self.repo_root)
+        if (cache_hit and fp and not py_lane
+                and _is_workspace_repo(self.repo_root)
                 and not getattr(self, "_materialized_restore", False)):
             relink = _offline_relink_cmd(self.profile.install_cmd)
             if relink is not None:
@@ -1036,9 +1098,13 @@ class FindingVerifier:
                          "base; invalidating cache entry " + fp
                          + " and retrying with a fresh install")
                 _invalidate_cache_entry(fp)
-                shutil.rmtree(os.path.join(self._rootdir(repo),
-                                           "node_modules"),
-                              ignore_errors=True)
+                if py_lane and self._warm_root:
+                    shutil.rmtree(os.path.join(self._warm_root, _PYUSER_DIR),
+                                  ignore_errors=True)
+                else:
+                    shutil.rmtree(os.path.join(self._rootdir(repo),
+                                               "node_modules"),
+                                  ignore_errors=True)
                 cache_hit = False
                 smoke_skip = False
                 self._materialized_restore = False
@@ -1052,6 +1118,30 @@ class FindingVerifier:
         # NOT hit the cache, there's no prep error, and we have a fingerprint.
         # Best-effort: a cache-write failure never affects this run.
         if (_warm_cache_enabled() and not cache_hit and not self._prep_error
+                and fp and self.profile.install_cmd and py_lane
+                and self._warm_root):
+            # python lane: persist the user-site the install populated
+            # (sig EDGEVERDICT_PY_WARM_CACHE_V1). The editable finder it
+            # holds points at the container path of the repo copy, which is
+            # the same every run, so a restored site resolves fresh source.
+            src_py = os.path.join(self._warm_root, _PYUSER_DIR)
+            if os.path.isdir(src_py):
+                cdir = os.path.join(_warm_cache_root(), fp)
+                try:
+                    os.makedirs(cdir, exist_ok=True)
+                    tmp_py = cdir + ".tmp-" + _PY_CACHE_TREE
+                    shutil.rmtree(tmp_py, ignore_errors=True)
+                    _clone_tree(src_py, tmp_py)
+                    final_py = os.path.join(cdir, _PY_CACHE_TREE)
+                    shutil.rmtree(final_py, ignore_errors=True)
+                    os.replace(tmp_py, final_py)
+                    with open(os.path.join(cdir, "deps.ok"), "w") as mf:
+                        mf.write(fp)
+                    self.log("  warm base: cached python user-site for "
+                             f"reuse (key {fp})")
+                except (OSError, shutil.Error):
+                    pass  # cache is best-effort; never break the run
+        elif (_warm_cache_enabled() and not cache_hit and not self._prep_error
                 and fp and self.profile.install_cmd):
             # the ROOT tree, never _workdir's: the direct runner has been
             # active since before smoke, and following it here is the bug
@@ -1108,7 +1198,8 @@ class FindingVerifier:
                 and fp and self.profile.install_cmd
                 and getattr(self.profile, "smoke_cmd", None)):
             cdir = os.path.join(_warm_cache_root(), fp)
-            if os.path.isdir(os.path.join(cdir, "node_modules")):
+            if (os.path.isdir(os.path.join(cdir, "node_modules"))
+                    or os.path.isdir(os.path.join(cdir, _PY_CACHE_TREE))):
                 try:
                     marker = os.path.join(
                         cdir, _project_smoke_marker(self.tests_file))
