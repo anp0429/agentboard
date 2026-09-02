@@ -139,6 +139,11 @@ def filtered_environment(env: Mapping[str, str]) -> dict[str, str]:
     result.setdefault("CI", "true")
     result.setdefault("HOME", "/tmp/edgeverdict-home")
     result.setdefault("TMPDIR", "/tmp")
+    # the sandbox uid has no passwd entry; getpass.getuser() reads these
+    # first and raises "No username set in the environment" without them
+    # (pymysql does it at import, which benched posthog's collection)
+    result.setdefault("USER", "edgeverdict")
+    result.setdefault("LOGNAME", "edgeverdict")
     return result
 
 
@@ -288,6 +293,13 @@ def _looks_like_install(args: Sequence[str]) -> bool:
     head = Path(rest[0]).name.lower().split("@")[0]
     words = [Path(str(x)).name.lower() for x in rest[:4]]
     joined = " ".join(str(x).lower() for x in rest[:8])
+    # a multi-step install arrives as `sh -c "<script>"` (uv-locked repos:
+    # pip install uv, uv export, pip install -r ...); the script text is
+    # the install signal (sig EDGEVERDICT_UV_LOCK_INSTALL_V1)
+    if head in ("sh", "bash") and len(rest) >= 3 and rest[1] == "-c":
+        script = str(rest[2]).lower()
+        return "pip install" in script or "uv export" in script \
+            or "uv sync" in script or "uv pip" in script
     return (
         head in _PKG_MANAGERS and "install" in joined
     ) or (

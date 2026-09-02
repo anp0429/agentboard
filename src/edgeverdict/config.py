@@ -522,6 +522,18 @@ def _python_sandbox_install(scan_root: str, tests_file: str = "") -> list[str]:
     supplement = (_host_file_install_supplement(scan_root, tests_file)
                   if tests_file else [])
 
+    # uv-managed workspaces (sig EDGEVERDICT_UV_LOCK_INSTALL_V1): a flat
+    # pip command cannot resolve what the lockfile knows -- workspace
+    # members (posthog-owners, hogli: path sources), git sources pinned to
+    # a revision, and the exact versions. Ask uv to export the frozen lock
+    # as requirements and let pip install THAT into the user-site, then
+    # install workspace members editable with no deps. Same user-site,
+    # same warm cache, same runner; only the resolution changes. The
+    # host-file supplement is not needed: the lock is the complete
+    # dependency set.
+    if os.path.isfile(os.path.join(scan_root, "uv.lock")):
+        return _uv_lock_install(scan_root, spec, group_reqs)
+
     # Editable install requires a build backend. A repo with no
     # [build-system] table is not a buildable distribution -- pip falls
     # back to legacy setuptools, which cannot package a flat multi-package
@@ -540,6 +552,105 @@ def _python_sandbox_install(scan_root: str, tests_file: str = "") -> list[str]:
 
     return ["python", "-m", "pip", "install", "--quiet", "--user",
             "--no-cache-dir", "-e", spec, *group_reqs, *supplement]
+
+
+def _uv_workspace_members(scan_root: str) -> list[str]:
+    """Repo-relative dirs of [tool.uv.workspace].members that carry a
+    pyproject with a build backend (editable-installable). Glob patterns
+    are expanded; anything unreadable is skipped."""
+    import glob as _glob
+    pyproject = os.path.join(scan_root, "pyproject.toml")
+    try:
+        import tomllib
+        with open(pyproject, "rb") as fh:
+            data = tomllib.load(fh)
+    except (OSError, ValueError):
+        return []
+    patterns = (data.get("tool", {}).get("uv", {})
+                .get("workspace", {}).get("members", []))
+    out: list[str] = []
+    for pat in patterns:
+        if not isinstance(pat, str):
+            continue
+        for d in sorted(_glob.glob(os.path.join(scan_root, pat))):
+            if os.path.isdir(d) and _has_build_system(d):
+                out.append(os.path.relpath(d, scan_root).replace(os.sep, "/"))
+    return out
+
+
+def _uv_lock_install(scan_root: str, spec: str,
+                     group_reqs: list[str]) -> list[str]:
+    """The install for a uv-locked repo, as one shell script so the
+    verifier still sees a single install command
+    (sig EDGEVERDICT_UV_LOCK_INSTALL_V1).
+
+    1. pip install uv into the user-site (network phase; the sandbox image
+       does not ship it),
+    2. uv export --frozen: the lock as requirements, workspace members and
+       the root project left out, git sources pinned to their revisions,
+    3. pip install -r that into the user-site,
+    4. editable --no-deps installs of the workspace members that have a
+       build backend, so `import hogli` / `import posthog_owners` resolve,
+    5. the root project editable when it has a build backend (the deps-only
+       rule for build-system-less repos still applies: the container cwd
+       is the repo root and the package imports from the tree).
+    `spec` is ".[extra]" or "."; the extra name becomes --extra. Explicit
+    dependency-group names come from the caller as --group."""
+    export = ["python", "-m", "uv", "export", "--frozen", "--no-hashes",
+              "--no-emit-workspace", "--no-emit-project",
+              "--format", "requirements.txt"]
+    if spec.startswith(".[") and spec.endswith("]"):
+        export += ["--extra", spec[2:-1]]
+    for name in ("test", "tests", "dev"):
+        if _has_dependency_group(scan_root, name):
+            export += ["--group", name]
+            break
+    export += ["-o", ".edgeverdict-uv-reqs.txt"]
+    pip = "python -m pip install --quiet --user --no-cache-dir"
+    # --ignore-requires-python on the export install: `uv sync --frozen`
+    # installs the locked versions without re-checking each package's own
+    # Requires-Python (posthog runs dagster 1.10.18, which declares <3.13,
+    # on 3.13.13 in CI). pip enforces it and would refuse the lock's own
+    # choices. A genuinely incompatible package fails at import, which
+    # smoke reports; a refused install reports nothing.
+    # EDGEVERDICT_PIP_NO_BINARY: packages pip must build from source so they
+    # link against the sandbox's system libraries instead of a wheel's
+    # bundled copy (posthog: lxml and xmlsec must share one libxml2, so
+    # their build runs uv sync --no-binary-package lxml --no-binary-package
+    # xmlsec). Comma-separated, same syntax as pip --no-binary.
+    no_binary = os.environ.get("EDGEVERDICT_PIP_NO_BINARY", "").strip()
+    nb = f" --no-binary {no_binary}" if no_binary else ""
+    # The third-party install runs WITHOUT the sandbox's global
+    # SETUPTOOLS_SCM_PRETEND_VERSION (sig EDGEVERDICT_SCM_PRETEND_V1): that
+    # default exists so the REPO's own VCS-versioned editable build survives
+    # a .git-less copy, but any sdist built from source in this step
+    # (xmlsec under --no-binary) would take the pretend version too and pip
+    # rejects "requested 1.3.17, installing 0.0.0". Third-party sdists carry
+    # their version in PKG-INFO; only the repo's tree needs the pretend.
+    lines = [
+        "set -e",
+        f"{pip} uv",
+        " ".join(export),
+        f"env -u SETUPTOOLS_SCM_PRETEND_VERSION {pip} --ignore-requires-python{nb}"
+        " -r .edgeverdict-uv-reqs.txt",
+    ]
+    members = _uv_workspace_members(scan_root)
+    if members:
+        lines.append(f"{pip} --no-deps " + " ".join(f"-e {m}" for m in members))
+    if _has_build_system(scan_root):
+        lines.append(f"{pip} --no-deps -e .")
+    return ["sh", "-c", "\n".join(lines)]
+
+
+def _has_dependency_group(scan_root: str, name: str) -> bool:
+    pyproject = os.path.join(scan_root, "pyproject.toml")
+    try:
+        import tomllib
+        with open(pyproject, "rb") as fh:
+            data = tomllib.load(fh)
+    except (OSError, ValueError):
+        return False
+    return name in data.get("dependency-groups", {})
 
 
 def _has_build_system(scan_root: str) -> bool:
@@ -876,6 +987,81 @@ def targets_from_diff(
             continue
         out.append(rel)
     return sorted(out)
+
+
+# -- diff-informed hosts (sig EDGEVERDICT_DIFF_HOSTS_V1) --------------------
+# A change that updates a test file, or a snapshot under __snapshots__, has
+# named its own host: posthog #90725 touched posthog/clickhouse/test/
+# __snapshots__/test_schema.ambr, and test_schema.py is where logs32.py is
+# exercised, while the only basename match in the whole repo
+# (posthog/settings/test_logs.py) is about logging settings. The basename
+# search cannot know that; the diff does.
+
+_SNAPSHOT_SUFFIXES = (".ambr", ".snap")
+
+
+def tests_from_diff(repo_root: str, base: str, head: str = "",
+                    worktree: bool = False) -> list[str]:
+    """Test files the change itself touched, snapshots mapped back to the
+    test module that owns them (__snapshots__/x.ambr -> x.py,
+    __snapshots__/x.test.ts.snap -> x.test.ts). Only files that exist."""
+    cmd = ["git", "-C", repo_root, "diff", "--name-only", "--diff-filter=d"]
+    if worktree:
+        cmd.append(base)
+    else:
+        cmd.append(f"{base}...{head}" if head else base)
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    if r.returncode != 0:
+        return []
+    out: list[str] = []
+    for line in r.stdout.splitlines():
+        rel = line.strip().replace("\\", "/")
+        if not rel:
+            continue
+        cand = ""
+        parts = rel.split("/")
+        if len(parts) >= 2 and parts[-2] == "__snapshots__" \
+                and rel.endswith(_SNAPSHOT_SUFFIXES):
+            name = parts[-1]
+            if name.endswith(".ambr"):
+                cand = "/".join(parts[:-2] + [name[:-len(".ambr")] + ".py"])
+            else:  # .snap: jest/vitest keep the full test filename
+                cand = "/".join(parts[:-2] + [name[:-len(".snap")]])
+        elif _looks_like_test_file(rel) and rel.endswith(_PROVE_SOURCE_EXTS):
+            cand = rel
+        if cand and cand not in out and os.path.isfile(os.path.join(repo_root, cand)):
+            out.append(cand)
+    return sorted(out)
+
+
+def _shared_dir_components(a: str, b: str) -> int:
+    da = os.path.dirname(a).replace("\\", "/").split("/")
+    db = os.path.dirname(b).replace("\\", "/").split("/")
+    n = 0
+    for x, y in zip(da, db):
+        if x != y or x == "":
+            break
+        n += 1
+    return n
+
+
+def host_for_target(target: str, diff_hosts: list[str],
+                    default_host: str = "") -> str:
+    """The best host for a target: the diff-touched test file sharing the
+    most directory components with it, when that beats the basename
+    default (or there is no default). Ties keep the default; a diff host
+    must share at least two components so a repo-wide snapshot file never
+    captures an unrelated target."""
+    best, best_n = "", -1
+    for h in diff_hosts:
+        n = _shared_dir_components(target, h)
+        if n > best_n:
+            best, best_n = h, n
+    if not best or best_n < 2:
+        return default_host
+    if default_host and _shared_dir_components(target, default_host) >= best_n:
+        return default_host
+    return best
 
 
 def untracked_source_files(repo_root: str) -> list[str]:

@@ -356,8 +356,27 @@ def prove(args) -> int:
     print(f"  intent: from {'--intent' if plan.intent_source == 'flag' else 'commit message(s)'}")
 
     from .prove import prove_board_path
+    # diff-informed hosts (sig EDGEVERDICT_DIFF_HOSTS_V1): a change that
+    # touched a test file or its snapshot has named the host; pair each
+    # target with the nearest one when it beats the basename default.
+    from .config import host_for_target, tests_from_diff
+    diff_hosts = tests_from_diff(
+        repo, plan.base, "" if plan.worktree else plan.head, plan.worktree)
+    primary_tests = ""
+    also_specs: list[str] = []
+    for i, tgt in enumerate(plan.targets):
+        dflt = _default_tests_for(repo, tgt, dir_fallback=False)
+        if dflt and not os.path.isfile(os.path.join(repo, dflt)):
+            dflt = ""
+        host = host_for_target(tgt, diff_hosts, dflt)
+        if host and host != dflt:
+            print(f"  tests for {tgt}: {host} (named by the change's own diff)")
+        if i == 0:
+            primary_tests = host if host != dflt else ""
+        else:
+            also_specs.append(f"{tgt}:{host}" if host and host != dflt else tgt)
     req = ReviewRequest(
-        repo=repo, target=plan.targets[0], also=plan.targets[1:],
+        repo=repo, target=plan.targets[0], also=also_specs, tests=primary_tests,
         head="" if plan.worktree else plan.head,
         base=plan.base if plan.worktree else plan.base,
         worktree=plan.worktree, intent=plan.intent,

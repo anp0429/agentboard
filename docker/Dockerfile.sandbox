@@ -1,4 +1,4 @@
-# EDGEVERDICT_SANDBOX_DOCKERFILE_V2_PYARG
+# EDGEVERDICT_SANDBOX_DOCKERFILE_V3_BUILDDEPS
 # Python version is a build arg so repos that pin requires-python (e.g.
 # PostHog's ==3.13.13) get a matching sandbox without editing this file:
 #   docker build -f docker/Dockerfile.sandbox \
@@ -10,8 +10,15 @@ ARG PYTHON_VERSION=3.12.11
 FROM python:${PYTHON_VERSION}-slim-bookworm
 
 ARG NODE_MAJOR=22
+# Compile-from-source deps for python repos whose lock pins packages with no
+# wheel for this platform (zstd, polyleven, pywatchman on arm64) or that must
+# link against system libraries (xmlsec against libxml2, psycopg2 against
+# libpq). The list is PostHog's own build stage, taken verbatim from their
+# Dockerfile; it is the common denominator for Django monorepos, and a
+# generic image without it fails installs one package at a time.
+ARG BUILD_DEPS="build-essential libpq-dev libxmlsec1 libxmlsec1-dev libffi-dev zlib1g-dev pkg-config"
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl git gnupg tini \
+    && apt-get install -y --no-install-recommends ca-certificates curl git gnupg tini ${BUILD_DEPS} \
     && mkdir -p /etc/apt/keyrings \
     && curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
        | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg \

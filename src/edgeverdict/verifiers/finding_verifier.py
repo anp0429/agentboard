@@ -304,7 +304,23 @@ def _install_failure_class(proc) -> str:
         return "network"
     if rc in (137, -9) or any(m in tail for m in _RESOURCE_FAILURE_MARKS):
         return "resources"
+    # the repo pins an interpreter the sandbox image does not have: pip
+    # reports every candidate as "Requires-Python ..." and finds none. No
+    # retry can grow a new python (sig EDGEVERDICT_UV_LOCK_INSTALL_V1).
+    if "Requires-Python" in tail and "Could not find a version" in tail:
+        return "python"
     return ""
+
+
+def _repo_requires_python(repo_root: str) -> str:
+    """[project].requires-python as written, or ""."""
+    try:
+        import tomllib
+        with open(os.path.join(repo_root, "pyproject.toml"), "rb") as fh:
+            return str(tomllib.load(fh).get("project", {})
+                       .get("requires-python", "") or "")
+    except (OSError, ValueError):
+        return ""
 
 
 _DEFAULT_LIMIT_HINT = (
@@ -507,6 +523,23 @@ def _project_smoke_marker(tests_file: str) -> str:
     proj = os.path.dirname(tests_file) or "."
     digest = hashlib.sha1(proj.encode()).hexdigest()[:12]
     return f"smoke.{digest}.ok"
+
+
+def _note_heal(cdir: str, prep_error: str) -> None:
+    """Record whether this entry was written by a pass whose smoke FAILED
+    on a fresh install. Such an entry is not to be self-healed again: the
+    deps are what the install produces, and a second reinstall cannot
+    change the smoke result. A clean pass clears the marker.
+    (sig EDGEVERDICT_CACHE_ON_INSTALL_V1)"""
+    marker = os.path.join(cdir, "heal.tried")
+    try:
+        if prep_error:
+            with open(marker, "w") as mf:
+                mf.write(prep_error[:500])
+        elif os.path.isfile(marker):
+            os.remove(marker)
+    except OSError:
+        pass
 
 
 def _nm_complete(cdir: str) -> bool:
@@ -926,6 +959,12 @@ class FindingVerifier:
                         f"relink {time.monotonic() - t0:.1f}s "
                         "(workspace per-package node_modules, offline)")
         healed = False
+        # deps are banked on INSTALL success, not smoke success (sig
+        # EDGEVERDICT_CACHE_ON_INSTALL_V1): a smoke failure can be the
+        # environment (no USER for getpass, a missing service), which a
+        # reinstall never fixes; without this every such run paid the full
+        # install again (posthog: 355s, lost to a getuser() OSError).
+        install_ok = False
         while True:
             if not cache_hit and self.profile.install_cmd:
                 # refuse up front what cannot succeed: a networked install
@@ -964,15 +1003,32 @@ class FindingVerifier:
                         phases.append(
                             f"install {time.monotonic() - t0:.1f}s "
                             f"({_fclass} failure; retries skipped)")
-                        _fix = (
-                            "the sandbox could not reach the package "
-                            "registry (DNS). If network was intended, "
-                            "re-run with EDGEVERDICT_SANDBOX_NETWORK="
-                            "install. " if _fclass == "network" else
-                            "the install ran out of memory or disk in the "
-                            "sandbox. Raise EDGEVERDICT_SANDBOX_MEMORY "
-                            "(e.g. 8g) and EDGEVERDICT_TMPFS_SIZE (e.g. "
-                            "8g) and re-run. ")
+                        if _fclass == "network":
+                            _fix = (
+                                "the sandbox could not reach the package "
+                                "registry (DNS). If network was intended, "
+                                "re-run with EDGEVERDICT_SANDBOX_NETWORK="
+                                "install. ")
+                        elif _fclass == "python":
+                            _pin = _repo_requires_python(self.repo_root)
+                            _ver = "".join(
+                                ch for ch in _pin if ch.isdigit() or ch == ".")
+                            _fix = (
+                                "the repo requires python "
+                                + (_pin or "(unreadable)")
+                                + " and the sandbox image ships a different "
+                                "one. Build a matching image: `docker build "
+                                "-f docker/Dockerfile.sandbox --build-arg "
+                                f"PYTHON_VERSION={_ver or '<version>'} -t "
+                                f"edgeverdict-sandbox:py{_ver or '<version>'}"
+                                " .` then re-run with EDGEVERDICT_SANDBOX_"
+                                f"IMAGE=edgeverdict-sandbox:py{_ver or '<version>'}. ")
+                        else:
+                            _fix = (
+                                "the install ran out of memory or disk in "
+                                "the sandbox. Raise EDGEVERDICT_SANDBOX_MEMORY "
+                                "(e.g. 8g) and EDGEVERDICT_TMPFS_SIZE (e.g. "
+                                "8g) and re-run. ")
                         self._prep_error = ("install failed: " + _fix
                                             + _strip_pm_noise(_proc_tail(inst)))
                         break
@@ -1035,6 +1091,8 @@ class FindingVerifier:
                         self._prep_error = f"build failed: {_proc_tail(bld)}"
                 except subprocess.TimeoutExpired:
                     self._prep_error = f"build did not finish within {self.timeout}s"
+            if not cache_hit and not self._prep_error:
+                install_ok = True
             # After install/restore linked the deps, swap the per-test command
             # from `pnpm exec` to the resolved vitest binary — the biggest
             # measured speed lever (pnpm exec re-resolves the workspace every
@@ -1092,8 +1150,11 @@ class FindingVerifier:
             # with a fresh install -- which also re-caches the entry in the
             # current format. A smoke failure on a fresh install is the
             # repo's own truth and stands.
+            _heal_marker = (os.path.join(_warm_cache_root(), fp, "heal.tried")
+                            if fp else "")
             if (self._prep_error and cache_hit and not healed and fp
-                    and self.profile.install_cmd):
+                    and self.profile.install_cmd
+                    and not os.path.isfile(_heal_marker)):
                 self.log("  warm base: smoke failed on a cache-restored "
                          "base; invalidating cache entry " + fp
                          + " and retrying with a fresh install")
@@ -1117,7 +1178,7 @@ class FindingVerifier:
         # exactly what the next run of this dep state wants. Only when we did
         # NOT hit the cache, there's no prep error, and we have a fingerprint.
         # Best-effort: a cache-write failure never affects this run.
-        if (_warm_cache_enabled() and not cache_hit and not self._prep_error
+        if (_warm_cache_enabled() and not cache_hit and install_ok
                 and fp and self.profile.install_cmd and py_lane
                 and self._warm_root):
             # python lane: persist the user-site the install populated
@@ -1137,11 +1198,12 @@ class FindingVerifier:
                     os.replace(tmp_py, final_py)
                     with open(os.path.join(cdir, "deps.ok"), "w") as mf:
                         mf.write(fp)
+                    _note_heal(cdir, self._prep_error)
                     self.log("  warm base: cached python user-site for "
                              f"reuse (key {fp})")
                 except (OSError, shutil.Error):
                     pass  # cache is best-effort; never break the run
-        elif (_warm_cache_enabled() and not cache_hit and not self._prep_error
+        elif (_warm_cache_enabled() and not cache_hit and install_ok
                 and fp and self.profile.install_cmd):
             # the ROOT tree, never _workdir's: the direct runner has been
             # active since before smoke, and following it here is the bug
@@ -1185,6 +1247,7 @@ class FindingVerifier:
                     # served. Smoke markers are separate and per-project.
                     with open(os.path.join(cdir, "deps.ok"), "w") as mf:
                         mf.write(fp)
+                    _note_heal(cdir, self._prep_error)
                     self.log("  warm base: cached deps for reuse "
                              f"(key {fp})")
                 except (OSError, shutil.Error):
