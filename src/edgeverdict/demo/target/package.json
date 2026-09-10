@@ -3,5 +3,5 @@
   "private": true,
   "type": "module",
   "scripts": { "test": "vitest run" },
-  "devDependencies": { "vitest": "3.2.6" }
+  "devDependencies": { "vitest": "4.1.11" }
 }
